@@ -1,0 +1,7 @@
+*.x
+*.xyz
+*.grad*
+*.state
+TEST/*
+abort/*
+banemecp

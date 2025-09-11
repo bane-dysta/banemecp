@@ -1,0 +1,31 @@
+%Prog g16
+%Geom init.xyz
+
+%InpTmplt1
+%chk=state1.chk
+# B3LYP/def2svp force [guess(read)]
+
+state1
+
+0 1
+[geom]
+
+
+end
+
+%InpTmplt2
+%chk=state2.chk
+# B3LYP/def2svp force [guess(read)]
+
+state2
+
+0 3
+[geom]
+
+
+end
+
+%GrpTmplt
+state1=scf
+state2=tddft
+end
