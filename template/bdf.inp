@@ -1,0 +1,74 @@
+%Prog bdf
+%Geom ro.xyz
+
+%Control
+maxcyc=50
+tmpdir=temp
+keeptmp=true
+restart=false
+end
+
+%InpTmplt1
+$COMPASS
+Title
+ banemecp template
+Basis
+ Def2-SVP
+Geometry
+[geom]
+End geometry
+$END
+
+$XUANYUAN
+$END
+
+$SCF
+UKS
+dft
+ BHHLYP
+Charge
+  0
+SpinMulti
+  3
+$END
+
+$TDDFT
+isf          # isf=-1, spin flip down
+ -1
+iprint
+ 3
+iroot        #每一个不可约表示计算1个激发态
+ 2
+istore       # save TDDFT wave function in 1st scratch file
+ 1
+ialda
+ 4          # collinear kernel
+crit_vec
+ 1.d-6
+crit_e
+ 1.d-8
+$END
+
+$resp
+geom
+method
+ 2
+iroot
+ 1 2
+nfiles
+ 1
+$end
+
+%cp $BDFTASK.log astep[nstep]_state1.log
+%cp $BDFTASK.log astep[nstep]_state2.log
+
+end
+
+%InpTmplt2
+%echo BDF do not need to do the second calculation.
+end
+
+%GrpTmplt
+state1=sf1
+state2=sf2
+end

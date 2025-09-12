@@ -25,22 +25,102 @@ C
       DOUBLE PRECISION X_1(Nx), X_2(Nx), X_3(Nx)
       DOUBLE PRECISION G_1(Nx), G_2(Nx)
       
-      CHARACTER*256 inputname, filename
-      LOGICAL file_exists, first_step
-      INTEGER nargs, iargc, natom_actual
+C     Convergence thresholds (now dynamic)
+      DOUBLE PRECISION TDE, TDXMax, TDXRMS, TGMax, TGRMS
       
-C     Get input filename from command line
+      CHARACTER*256 inputname, filename, arg
+      LOGICAL file_exists, first_step
+      INTEGER nargs, iargc, natom_actual, iarg
+      
+C     Set default convergence thresholds
+      TDE = 5.d-5
+      TDXMax = 4.d-3
+      TDXRMS = 2.5d-3
+      TGMax = 7.d-4
+      TGRMS = 5.d-4
+      
+C     Parse command line arguments
       nargs = iargc()
       if (nargs .lt. 1) then
-          write(*,*) 'Usage: ./MECP.x inputname'
+          write(*,*) 'Usage: ./MECP.x inputname [options]'
           write(*,*) 'Input files required:'
           write(*,*) '  inputname.xyz   - geometry file'
           write(*,*) '  inputname.grad1 - gradient file for state 1'
           write(*,*) '  inputname.grad2 - gradient file for state 2'
+          write(*,*) ''
+          write(*,*) 'Optional convergence parameters:'
+          write(*,*) '  --tde VALUE     Energy gap threshold (default: 5e-5)'
+          write(*,*) '  --tgmax VALUE   Max gradient threshold (default: 7e-4)'
+          write(*,*) '  --tgrms VALUE   RMS gradient threshold (default: 5e-4)'
+          write(*,*) '  --tdxmax VALUE  Max displacement threshold (default: 4e-3)'
+          write(*,*) '  --tdxrms VALUE  RMS displacement threshold (default: 2.5e-3)'
+          write(*,*) ''
+          write(*,*) 'Example:'
+          write(*,*) '  ./MECP.x mol1 --tgmax 1e-3 --tgrms 8e-4'
           stop
       endif
       
       call getarg(1, inputname)
+      
+C     Parse optional convergence parameters
+      iarg = 2
+      do while (iarg .le. nargs)
+          call getarg(iarg, arg)
+          if (arg .eq. '--tde') then
+              if (iarg .eq. nargs) then
+                  write(*,*) 'Error: --tde requires a value'
+                  stop
+              endif
+              call getarg(iarg + 1, arg)
+              read(arg, *, err=100) TDE
+              iarg = iarg + 2
+          else if (arg .eq. '--tgmax') then
+              if (iarg .eq. nargs) then
+                  write(*,*) 'Error: --tgmax requires a value'
+                  stop
+              endif
+              call getarg(iarg + 1, arg)
+              read(arg, *, err=101) TGMax
+              iarg = iarg + 2
+          else if (arg .eq. '--tgrms') then
+              if (iarg .eq. nargs) then
+                  write(*,*) 'Error: --tgrms requires a value'
+                  stop
+              endif
+              call getarg(iarg + 1, arg)
+              read(arg, *, err=102) TGRMS
+              iarg = iarg + 2
+          else if (arg .eq. '--tdxmax') then
+              if (iarg .eq. nargs) then
+                  write(*,*) 'Error: --tdxmax requires a value'
+                  stop
+              endif
+              call getarg(iarg + 1, arg)
+              read(arg, *, err=103) TDXMax
+              iarg = iarg + 2
+          else if (arg .eq. '--tdxrms') then
+              if (iarg .eq. nargs) then
+                  write(*,*) 'Error: --tdxrms requires a value'
+                  stop
+              endif
+              call getarg(iarg + 1, arg)
+              read(arg, *, err=104) TDXRMS
+              iarg = iarg + 2
+          else
+              write(*,*) 'Warning: Unknown argument: ', trim(arg)
+              iarg = iarg + 1
+          endif
+      end do
+      
+C     Print convergence thresholds being used
+      write(*,*) '=== Convergence Thresholds ==='
+      write(*,'(A,E12.5)') 'Energy gap (TDE):        ', TDE
+      write(*,'(A,E12.5)') 'Max gradient (TGMax):    ', TGMax
+      write(*,'(A,E12.5)') 'RMS gradient (TGRMS):    ', TGRMS
+      write(*,'(A,E12.5)') 'Max displacement (TDXMax):', TDXMax
+      write(*,'(A,E12.5)') 'RMS displacement (TDXRMS):', TDXRMS
+      write(*,*) '=============================='
+      write(*,*) ''
       
 C     Check if this is first step (no MECP.state file exists)
       inquire(file='MECP.state', exist=file_exists)
@@ -72,10 +152,10 @@ C     Perform BFGS update (ORIGINAL ALGORITHM)
       CALL UpdateX(Nx, Nstep, first_step, X_1, X_2, X_3, 
      &             G_1, G_2, IH_1, IH_2)
      
-C     Test convergence
+C     Test convergence (now with dynamic thresholds)
       CALL TestConvergence(Nx, natom_actual, Nstep, AtNum, 
      &                     Ea_2, Eb_2, X_2, X_3, ParG, PerpG, 
-     &                     G_2, Conv)
+     &                     G_2, Conv, TDE, TDXMax, TDXRMS, TGMax, TGRMS)
      
       IF (Conv .eq. 1) THEN
           write(*,*) 'MECP optimization CONVERGED!'
@@ -84,7 +164,8 @@ C     Test convergence
 C         Write convergence status and criteria
           CALL WriteConvergenceInfo('CONVERGED', Nx, natom_actual, 
      &                              Nstep, Ea_2, Eb_2, X_2, X_3, 
-     &                              ParG, PerpG, G_2)
+     &                              ParG, PerpG, G_2, TDE, TDXMax, 
+     &                              TDXRMS, TGMax, TGRMS)
 C         Write final geometry
           CALL WriteXYZ('final.xyz', natom_actual, AtNum, X_3,
      &                  'MECP Converged')
@@ -95,7 +176,8 @@ C         Clean up state file
 C         Write convergence status and criteria
           CALL WriteConvergenceInfo('NOT_CONVERGED', Nx, natom_actual, 
      &                              Nstep, Ea_2, Eb_2, X_2, X_3, 
-     &                              ParG, PerpG, G_2)
+     &                              ParG, PerpG, G_2, TDE, TDXMax,
+     &                              TDXRMS, TGMax, TGRMS)
 C         Write new geometry for next iteration
           CALL WriteXYZ('new.xyz', natom_actual, AtNum, X_3,
      &                  'MECP Step')
@@ -105,27 +187,40 @@ C         Save current state
      &                    Ga_2, Gb_2, G_2)
       END IF
 
-      END
+      goto 999
+
+C     Error handling for argument parsing
+100   write(*,*) 'Error: Invalid value for --tde: ', trim(arg)
+      stop
+101   write(*,*) 'Error: Invalid value for --tgmax: ', trim(arg)
+      stop
+102   write(*,*) 'Error: Invalid value for --tgrms: ', trim(arg)
+      stop
+103   write(*,*) 'Error: Invalid value for --tdxmax: ', trim(arg)
+      stop
+104   write(*,*) 'Error: Invalid value for --tdxrms: ', trim(arg)
+      stop
+
+999   END
 
 
 C=====================================================================
       SUBROUTINE WriteConvergenceInfo(status, Nx, Natom_actual, 
      &                                 Nstep, Ea, Eb, X_2, X_3, 
-     &                                 ParG, PerpG, G)
+     &                                 ParG, PerpG, G, TDE, TDXMax,
+     &                                 TDXRMS, TGMax, TGRMS)
       implicit none
       
       CHARACTER*(*) status
       INTEGER Nx, Natom_actual, Nstep, i
       DOUBLE PRECISION Ea, Eb, X_2(Nx), X_3(Nx), ParG(Nx)
       DOUBLE PRECISION PerpG(Nx), G(Nx)
+      DOUBLE PRECISION TDE, TDXMax, TDXRMS, TGMax, TGRMS
       
       CHARACTER*3 flags(5)
       LOGICAL PConv(5)
       DOUBLE PRECISION DeltaX(Nx), DE, DXMax, DXRMS, GMax, GRMS
       DOUBLE PRECISION PpGRMS, PGRMS
-      DOUBLE PRECISION TDE, TDXMax, TDXRMS, TGMax, TGRMS
-      PARAMETER (TDE=5.d-5,TDXMax=4.d-3,TDXRMS=2.5d-3)
-      PARAMETER (TGMax=7.d-4,TGRMS=5.d-4)
 
 C     Calculate convergence criteria
       DE = ABS(Ea - Eb)
@@ -406,10 +501,10 @@ C=====================================================================
       SUBROUTINE ElementToNumber(element, number)
       implicit none
       
-      CHARACTER*2 element
+      CHARACTER*2 element, normalized_element
       INTEGER number
       CHARACTER*2 symbols(118)
-      INTEGER i
+      INTEGER i, ic1, ic2
       
       DATA symbols /'H ','He','Li','Be','B ','C ','N ','O ','F ',
      & 'Ne','Na','Mg','Al','Si','P ','S ','Cl','Ar','K ','Ca',
@@ -424,18 +519,37 @@ C=====================================================================
      & 'Md','No','Lr','Rf','Db','Sg','Bh','Hs','Mt','Ds',
      & 'Rg','Cn','Nh','Fl','Mc','Lv','Ts','Og'/
       
+C     Normalize element symbol: first letter uppercase, second lowercase
+      normalized_element = element
+      
+C     Convert first character to uppercase
+      ic1 = ICHAR(normalized_element(1:1))
+      if (ic1 .ge. ICHAR('a') .and. ic1 .le. ICHAR('z')) then
+          normalized_element(1:1) = CHAR(ic1 - ICHAR('a') + ICHAR('A'))
+      endif
+      
+C     Convert second character to lowercase (if it exists and is not space)
+      if (normalized_element(2:2) .ne. ' ') then
+          ic2 = ICHAR(normalized_element(2:2))
+          if (ic2 .ge. ICHAR('A') .and. ic2 .le. ICHAR('Z')) then
+              normalized_element(2:2) = CHAR(ic2 - ICHAR('A') + ICHAR('a'))
+          endif
+      endif
+      
       number = 0
       DO i = 1, 118
-          IF (element .eq. symbols(i)) THEN
+          IF (normalized_element .eq. symbols(i)) THEN
               number = i
               RETURN
           END IF
       END DO
       
-C     If not found, might be lowercase or mixed case
+C     Error: Unknown element
       IF (number .eq. 0) THEN
-          write(*,*) 'Warning: Unknown element ', element
-          number = 6  ! Default to carbon
+          write(*,*) 'Error: Unknown element symbol: ', element
+          write(*,*) 'Normalized to: ', normalized_element
+          write(*,*) 'Check your input geometry file for typos'
+          stop
       END IF
       
       RETURN
@@ -632,20 +746,19 @@ C=====================================================================
 
 C=====================================================================
       SUBROUTINE TestConvergence(Nx,Natom_actual,Nstep,AtNum,Ea,Eb,
-     &                           X_2,X_3,ParG,PerpG,G,Conv)
+     &                           X_2,X_3,ParG,PerpG,G,Conv,TDE,TDXMax,
+     &                           TDXRMS,TGMax,TGRMS)
       implicit none
 
       INTEGER Nx, Natom_actual, AtNum(*), Nstep, Conv, i, j, k
       DOUBLE PRECISION Ea, Eb, X_2(Nx), ParG(Nx), PerpG(Nx)
       DOUBLE PRECISION X_3(Nx), G(Nx)
+      DOUBLE PRECISION TDE, TDXMax, TDXRMS, TGMax, TGRMS
 
       CHARACTER*3 flags(5)
       LOGICAL PConv(5)
       DOUBLE PRECISION DeltaX(Nx), DE, DXMax, DXRMS, GMax, GRMS
-      DOUBLE PRECISION PpGRMS, PGRMS, TDE
-      DOUBLE PRECISION TDXMax, TDxRMS, TGMax, TGRMS
-      PARAMETER (TDE=5.d-5,TDXMax=4.d-3,TDXRMS=2.5d-3)
-      PARAMETER (TGMax=7.d-4,TGRMS=5.d-4)
+      DOUBLE PRECISION PpGRMS, PGRMS
       CHARACTER*2 element
 
       DE = ABS(Ea - Eb)
@@ -780,7 +893,7 @@ C     Write gradient details
               CALL NumberToElement(AtNum(i), element)
               WRITE(*,'(A,A2,3F16.8)') '    ', element, X_3(k), 
      &                                 X_3(k+1), X_3(k+2)
-          END DO
+      END DO
           write(*,*)
       END IF
 

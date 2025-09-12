@@ -174,55 +174,37 @@ public:
 private:
     void parse_control_section(std::ifstream& file) {
         std::string line;
+        std::map<std::string, std::function<void(const std::string&)>> parsers = {
+            {"maxcyc", [this](const std::string& v) { control.maxcyc = std::stoi(v); }},
+            {"tmpdir", [this](const std::string& v) { control.tmpdir = v; }},
+            {"keeptmp", [this](const std::string& v) { control.keeptmp = (v == "true"); }},
+            {"debug", [this](const std::string& v) { control.debug = (v == "true"); }},
+            {"restart", [this](const std::string& v) { control.restart = (v == "true"); }}
+        };
+
         while (std::getline(file, line)) {
             line.erase(0, line.find_first_not_of(" \t\n\r"));
             line.erase(line.find_last_not_of(" \t\n\r") + 1);
-            
-            if (line == "end") {
-                break;
-            }
-            
+
+            if (line == "end") break;
             if (line.empty()) continue;
-            
+
             size_t eq_pos = line.find('=');
             if (eq_pos != std::string::npos) {
                 std::string key = line.substr(0, eq_pos);
                 std::string value = line.substr(eq_pos + 1);
-                
-                // Trim whitespace
-                key.erase(0, key.find_first_not_of(" \t\n\r"));
-                key.erase(key.find_last_not_of(" \t\n\r") + 1);
-                value.erase(0, value.find_first_not_of(" \t\n\r"));
-                value.erase(value.find_last_not_of(" \t\n\r") + 1);
-                
-                // Convert key to lowercase
-                std::transform(key.begin(), key.end(), key.begin(),
-                               [](unsigned char c){ return std::tolower(c); });
-                
-                // Parse different parameter types
-                if (key == "maxcyc") {
-                    try {
-                        control.maxcyc = std::stoi(value);
-                    } catch (const std::exception& e) {
-                        std::cerr << "Warning: Invalid maxcyc value '" << value 
-                                  << "', using default " << control.maxcyc << std::endl;
-                    }
-                } else if (key == "tmpdir") {
-                    control.tmpdir = value;
-                } else if (key == "keeptmp") {
-                    std::transform(value.begin(), value.end(), value.begin(),
-                                   [](unsigned char c){ return std::tolower(c); });
-                    control.keeptmp = (value == "true" || value == "yes" || value == "1");
-                } else if (key == "debug") {
-                    std::transform(value.begin(), value.end(), value.begin(),
-                                   [](unsigned char c){ return std::tolower(c); });
-                    control.debug = (value == "true" || value == "yes" || value == "1");
-                } else if (key == "restart") {  // æ–°å¢žrestartå‚æ•°è§£æž
-                    std::transform(value.begin(), value.end(), value.begin(),
-                                   [](unsigned char c){ return std::tolower(c); });
-                    control.restart = (value == "true" || value == "yes" || value == "1");
-                } else {
-                    std::cerr << "Warning: Unknown control parameter '" << key << "'" << std::endl;
+
+                // Trim
+                key.erase(0, key.find_first_not_of(" \t"));
+                key.erase(key.find_last_not_of(" \t") + 1);
+                value.erase(0, value.find_first_not_of(" \t"));
+                value.erase(value.find_last_not_of(" \t") + 1);
+
+                std::transform(key.begin(), key.end(), key.begin(), ::tolower);
+                std::transform(value.begin(), value.end(), value.begin(), ::tolower);
+
+                if (parsers.count(key)) {
+                    parsers[key](value);
                 }
             }
         }
@@ -332,7 +314,7 @@ public:
                 std::cout << "\n>>> MECP optimization converged in " << i << " steps. <<<" << std::endl;
                 
                 // Copy final result to original directory before cleanup
-                if (m_tmpdir != "." && m_tmpdir != "./" && !m_tmpdir.empty()) {
+                if (using_tmpdir()) {
                     try {
                         fs::copy_file("final.xyz", m_original_dir / (m_base_name + "_final.xyz"), fs::copy_options::overwrite_existing);
                     } catch (const fs::filesystem_error& e) {
@@ -357,8 +339,8 @@ private:
     std::string m_tmpdir;
     bool m_keeptmp;
     bool m_debug;
-    bool m_restart;       // æ–°å¢žï¼šrestartæŽ§åˆ¶
-    int m_current_step = 1; // æ–°å¢žï¼šå½"å‰æ­¥æ•°è·Ÿè¸ª
+    bool m_restart;       // New flag: restart control
+    int m_current_step = 1; // New flag: current step number
     InputParser m_input;
     ConfigParser m_config;
     XYZ m_initial_geom;
@@ -367,7 +349,7 @@ private:
     std::string m_base_name;
     bool m_is_external = false;
     
-    // æ–°å¢žï¼šä»Žconvg.tmpè¯»å–æ­¥æ•°
+    // New function: read step number from convg.tmp
     int read_step_from_convg() {
         if (!fs::exists("convg.tmp")) {
             if (m_debug) {
@@ -384,7 +366,7 @@ private:
             return -1;
         }
         
-        // è§£æžæ­¥æ•°ï¼šStep:   37
+        // Parse step number, e.g. Step: 37
         std::regex step_regex(R"(Step:\s*(\d+))");
         std::smatch match;
         
@@ -402,7 +384,7 @@ private:
         return -1;
     }
     
-    // æ–°å¢žï¼šé€‰æ‹©æ€§æ¸…ç†æ–‡ä»¶
+    // New function: selective file cleanup
     void cleanup_files_selective(bool preserve_restart_files = false) {
         if (m_debug) {
             std::cout << "Debug: Selective cleanup (preserve_restart_files=" 
@@ -414,7 +396,7 @@ private:
         };
         
         if (!preserve_restart_files) {
-            // å¦‚æžœä¸ä¿ç•™é‡å¯æ–‡ä»¶ï¼Œåˆ™æ¸…ç†æ‰€æœ‰æ–‡ä»¶
+            // If not preserving restart files, then clean all temp files
             patterns_to_clean.insert(patterns_to_clean.begin(), 
                 {"astep*", "MECP.state", "convg.tmp", "opt.trj"});
         }
@@ -446,6 +428,10 @@ private:
         }
     }
     
+    bool using_tmpdir() const {
+        return !m_tmpdir.empty() && m_tmpdir != ".";
+    }
+
     bool initialize() {
         m_base_name = m_input.geom_file.stem().string();
         
@@ -453,7 +439,7 @@ private:
         m_original_dir = fs::current_path();
 
         // Create and change to temporary directory if specified
-        if (m_tmpdir != "." && m_tmpdir != "./" && !m_tmpdir.empty()) {
+        if (using_tmpdir()) {
             try {
                 // Remove existing tmpdir if it exists to avoid conflicts
                 if (fs::exists(m_tmpdir)) {
@@ -509,29 +495,20 @@ private:
             return false;
         }
         
-        // é‡å¯é€»è¾'å¤„ç†
+        // Check if we should restart based on existing files and restart flag
         bool has_state_file = fs::exists("MECP.state");
         bool has_convg_file = fs::exists("convg.tmp");
         bool should_restart = m_restart && (has_state_file || has_convg_file);
-        
+
         if (should_restart) {
-            std::cout << ">>> Found restart files. Attempting to restart optimization... <<<" << std::endl;
-            if (m_debug) {
-                std::cout << "Debug: restart=true, MECP.state exists=" << (has_state_file ? "yes" : "no") 
-                          << ", convg.tmp exists=" << (has_convg_file ? "yes" : "no") << std::endl;
-            }
-            
-            // ä»Žconvg.tmpè¯»å–æ­¥æ•°
             int last_step = read_step_from_convg();
             if (last_step > 0) {
-                m_current_step = last_step + 1;  // ä¸‹ä¸€æ­¥
-                std::cout << ">>> Restarting from step " << m_current_step << " (last completed: " << last_step << ") <<<" << std::endl;
+                m_current_step = last_step + 1;
+                std::cout << ">>> Restarting from step " << m_current_step << " <<<" << std::endl;
             } else {
-                std::cout << ">>> Could not determine restart step, starting from step 1 <<<" << std::endl;
                 m_current_step = 1;
             }
-            
-            // é€‰æ‹©æ€§æ¸…ç†ï¼Œä¿ç•™é‡å¯ç›¸å…³æ–‡ä»¶
+            // Selective cleanup, preserve restart-related files
             cleanup_files_selective(true);
         } else {
             if (has_state_file && !m_restart) {
@@ -540,7 +517,7 @@ private:
                 std::cout << ">>> No restart files found. Starting fresh optimization... <<<" << std::endl;
             }
             
-            // å…¨é¢æ¸…ç†
+            // Full cleanup
             cleanup_files_selective(false);
             m_current_step = 1;
         }
@@ -550,7 +527,7 @@ private:
              return false;
         }
         
-        // å¦‚æžœä¸æ˜¯é‡å¯æˆ–è€…æ˜¯ç¬¬ä¸€æ­¥ï¼Œå‡†å¤‡ç¬¬ä¸€æ­¥å‡ ä½•
+        // If not restart or first step, prepare first step
         if (!should_restart || m_current_step == 1) {
             fs::copy(m_input.geom_file.filename(), "astep1.xyz");
             append_to_trajectory("astep1.xyz");
@@ -560,55 +537,26 @@ private:
     }
     
     void cleanup_if_needed() {
-        // Copy final results back to original directory if we were working in tmpdir
-        if (m_tmpdir != "." && m_tmpdir != "./" && !m_tmpdir.empty()) {
+        if (using_tmpdir()) {
             try {
-                // Copy final results back
-                if (fs::exists("opt.trj")) {
-                    fs::copy_file("opt.trj", m_original_dir / "opt.trj", fs::copy_options::overwrite_existing);
-                }
-                if (fs::exists(m_base_name + "_final.xyz")) {
-                    fs::copy_file(m_base_name + "_final.xyz", m_original_dir / (m_base_name + "_final.xyz"), fs::copy_options::overwrite_existing);
+                // Copy results back
+                std::vector<std::string> files_to_copy = {"opt.trj", m_base_name + "_final.xyz"};
+                for (const auto& file : files_to_copy) {
+                    if (fs::exists(file)) {
+                        fs::copy_file(file, m_original_dir / file, fs::copy_options::overwrite_existing);
+                    }
                 }
                 
-                // Change back to original directory
                 fs::current_path(m_original_dir);
-                if (m_debug) {
-                    std::cout << "Debug: Returned to original directory: " << m_original_dir << std::endl;
+                
+                if (!m_keeptmp) {
+                    fs::remove_all(m_tmpdir);
                 }
             } catch (const fs::filesystem_error& e) {
-                std::cerr << "Warning: Error during cleanup: " << e.what() << std::endl;
+                std::cerr << "Warning: Cleanup error: " << e.what() << std::endl;
             }
-        }
-        
-        if (!m_keeptmp) {
-            if (m_debug) {
-                std::cout << "Debug: Cleaning up temporary files (keeptmp=false)" << std::endl;
-            }
-            
-            // Remove temporary directory and all its contents
-            if (m_tmpdir != "." && m_tmpdir != "./" && !m_tmpdir.empty()) {
-                try {
-                    fs::remove_all(m_tmpdir);
-                    if (m_debug) {
-                        std::cout << "Debug: Removed temporary directory: " << m_tmpdir << std::endl;
-                    }
-                } catch (const fs::filesystem_error& e) {
-                    if (m_debug) {
-                        std::cout << "Debug: Could not remove tmpdir: " << e.what() << std::endl;
-                    }
-                }
-            } else {
-                // If working in current directory, clean up files normally
-                cleanup_files_selective(false);
-            }
-        } else {
-            if (m_debug) {
-                std::cout << "Debug: Keeping temporary files (keeptmp=true)" << std::endl;
-                if (m_tmpdir != "." && m_tmpdir != "./" && !m_tmpdir.empty()) {
-                    std::cout << "Debug: Temporary files are in: " << fs::absolute(m_tmpdir) << std::endl;
-                }
-            }
+        } else if (!m_keeptmp) {
+            cleanup_files_selective(false);
         }
     }
     
@@ -636,7 +584,7 @@ private:
                 }
                 // Copy config file to working directory if we're in tmpdir
                 bool parse_success;
-                if (m_tmpdir != "." && m_tmpdir != "./" && !m_tmpdir.empty()) {
+                if (using_tmpdir()) {
                     fs::copy_file(path, conf_name, fs::copy_options::overwrite_existing);
                     parse_success = m_config.parse(conf_name);
                 } else {
@@ -769,19 +717,58 @@ private:
         } else {
             output_suffix = m_config.config["main"]["OUTPUT_SUFFIX"];
         }
-        auto extract_single_state = [&](int state_num) {
+auto extract_single_state = [&](int state_num) {
             std::string state_type = m_input.grp_tmplt.at(state_num == 1 ? "state1" : "state2");
             const auto& rules = m_config.config.at(state_type);
             std::string output_file = step_name + "_state" + std::to_string(state_num) + "." + output_suffix;
             std::string content = read_file(output_file);
             if (content.empty()) return false;
+            
+            // Extract energy with E.LoacteCount support
             std::smatch e_match;
             std::regex e_regex(rules.at("E"));
-            if (!std::regex_search(content, e_match, e_regex) || e_match.size() < 2) {
-                std::cerr << "Error: Could not extract energy from " << output_file << std::endl;
+            
+            // Get E.LoacteCount parameter, default to 1 (first occurrence)
+            int e_locate_count = 1;
+            if (rules.count("E.LoacteCount") > 0) {
+                try {
+                    e_locate_count = std::stoi(rules.at("E.LoacteCount"));
+                } catch (const std::exception& e) {
+                    if (m_debug) {
+                        std::cerr << "Debug: Invalid E.LoacteCount, using default value 1" << std::endl;
+                    }
+                    e_locate_count = 1;
+                }
+            }
+            
+            // Find the Nth occurrence of energy pattern
+            std::string::const_iterator searchStart = content.cbegin();
+            bool found_energy = false;
+            for (int i = 0; i < e_locate_count; ++i) {
+                if (std::regex_search(searchStart, content.cend(), e_match, e_regex)) {
+                    if (i == e_locate_count - 1) {
+                        found_energy = true;
+                        break;
+                    }
+                    searchStart = e_match.suffix().first;
+                } else {
+                    break;
+                }
+            }
+            
+            if (!found_energy || e_match.size() < 2) {
+                std::cerr << "Error: Could not extract energy from " << output_file 
+                          << " (occurrence #" << e_locate_count << ")" << std::endl;
                 return false;
             }
+            
             std::string energy = e_match[1].str();
+            
+            if (m_debug) {
+                std::cout << "Debug: Found energy (occurrence #" << e_locate_count 
+                          << "): " << energy << std::endl;
+            }
+            
             std::string gard_locate = rules.at("GARD.Loacte");
             
             // Get GARD.LoacteCount parameter, default to 1 (first occurrence)
@@ -885,33 +872,18 @@ private:
                 grad_file_content << current_geom.symbols[i] << "    ";
                 
                 try {
-                    // Apply gradient_factor to handle force vs gradient data
                     double grad_x = std::stod(tokens.at(cols[0]-1)) * gradient_factor;
                     double grad_y = std::stod(tokens.at(cols[1]-1)) * gradient_factor;
                     double grad_z = std::stod(tokens.at(cols[2]-1)) * gradient_factor;
-                    
+
                     grad_file_content << std::fixed << std::setprecision(10) 
                                      << grad_x << "    " << grad_y << "    " << grad_z << "\n";
-                                     
-                    if (m_debug && i == 0) {  // Only show debug for first atom to avoid spam
-                        std::cout << "Debug: Applied gradient_factor " << gradient_factor 
-                                 << " to first atom gradients" << std::endl;
-                    }
                 } catch (const std::exception& e) {
-                    std::cerr << "Error: Failed to convert gradient data to double." << std::endl;
-                    std::cerr << "Line: '" << line << "'" << std::endl;
-                    std::cerr << "Tokens count: " << tokens.size() << std::endl;
-                    std::cerr << "Target columns: " << cols[0] << ", " << cols[1] << ", " << cols[2] << std::endl;
-                    if (tokens.size() >= cols[0]) {
-                        std::cerr << "Token[" << cols[0]-1 << "]: '" << tokens.at(cols[0]-1) << "'" << std::endl;
+                    std::cerr << "Error: Failed to parse gradient for atom " << (i+1) 
+                              << " in " << output_file << std::endl;
+                    if (m_debug) {
+                        std::cerr << "Debug: " << e.what() << " - Line: '" << line << "'" << std::endl;
                     }
-                    if (tokens.size() >= cols[1]) {
-                        std::cerr << "Token[" << cols[1]-1 << "]: '" << tokens.at(cols[1]-1) << "'" << std::endl;
-                    }
-                    if (tokens.size() >= cols[2]) {
-                        std::cerr << "Token[" << cols[2]-1 << "]: '" << tokens.at(cols[2]-1) << "'" << std::endl;
-                    }
-                    std::cerr << "Exception: " << e.what() << std::endl;
                     return false;
                 }
             }

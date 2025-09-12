@@ -18,6 +18,7 @@ end
 echo ">>>>> Start gamess calculation2"
 cp ../gamess.sh .
 bash gamess.sh [xyzfile] --iroot 2 --basename astep[nstep]_state2 >> mrsfout.tmp 2>&1
+cp opt.trj ..
 end
 
 %GrpTmplt

@@ -1,0 +1,1 @@
+g++ -std=c++17 -O2 banemecp.cpp -o banemecp -lstdc++fs
