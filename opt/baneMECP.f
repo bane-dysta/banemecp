@@ -1,4 +1,4 @@
-      PROGRAM MECP_Optimizer
+PROGRAM MECP_Optimizer
       implicit none
 
 C     sobMECP--bane modified, 2025.9.11
@@ -28,6 +28,9 @@ C
 C     Convergence thresholds (now dynamic)
       DOUBLE PRECISION TDE, TDXMax, TDXRMS, TGMax, TGRMS
       
+C     Trust radius parameter (now dynamic)
+      DOUBLE PRECISION STPMX
+      
       CHARACTER*256 inputname, filename, arg
       LOGICAL file_exists, first_step
       INTEGER nargs, iargc, natom_actual, iarg
@@ -38,6 +41,9 @@ C     Set default convergence thresholds
       TDXRMS = 2.5d-3
       TGMax = 7.d-4
       TGRMS = 5.d-4
+      
+C     Set default trust radius
+      STPMX = 0.1d0
       
 C     Parse command line arguments
       nargs = iargc()
@@ -55,14 +61,18 @@ C     Parse command line arguments
           write(*,*) '  --tdxmax VALUE  Max displacement threshold (default: 4e-3)'
           write(*,*) '  --tdxrms VALUE  RMS displacement threshold (default: 2.5e-3)'
           write(*,*) ''
+          write(*,*) 'Optional optimization parameters:'
+          write(*,*) '  --stpmx VALUE   Trust radius/max step (default: 0.1)'
+          write(*,*) '                  Reduce to 0.02 for oscillating systems'
+          write(*,*) ''
           write(*,*) 'Example:'
-          write(*,*) '  ./MECP.x mol1 --tgmax 1e-3 --tgrms 8e-4'
+          write(*,*) '  ./MECP.x mol1 --tgmax 1e-3 --stpmx 0.02'
           stop
       endif
       
       call getarg(1, inputname)
       
-C     Parse optional convergence parameters
+C     Parse optional parameters
       iarg = 2
       do while (iarg .le. nargs)
           call getarg(iarg, arg)
@@ -106,20 +116,34 @@ C     Parse optional convergence parameters
               call getarg(iarg + 1, arg)
               read(arg, *, err=104) TDXRMS
               iarg = iarg + 2
+          else if (arg .eq. '--stpmx') then
+              if (iarg .eq. nargs) then
+                  write(*,*) 'Error: --stpmx requires a value'
+                  stop
+              endif
+              call getarg(iarg + 1, arg)
+              read(arg, *, err=105) STPMX
+              iarg = iarg + 2
           else
               write(*,*) 'Warning: Unknown argument: ', trim(arg)
               iarg = iarg + 1
           endif
       end do
       
-C     Print convergence thresholds being used
+C     Print parameters being used
+      write(*,*) '=========================================='
       write(*,*) '=== Convergence Thresholds ==='
       write(*,'(A,E12.5)') 'Energy gap (TDE):        ', TDE
       write(*,'(A,E12.5)') 'Max gradient (TGMax):    ', TGMax
       write(*,'(A,E12.5)') 'RMS gradient (TGRMS):    ', TGRMS
       write(*,'(A,E12.5)') 'Max displacement (TDXMax):', TDXMax
       write(*,'(A,E12.5)') 'RMS displacement (TDXRMS):', TDXRMS
-      write(*,*) '=============================='
+      write(*,*) '=== Optimization Parameters ==='
+      write(*,'(A,E12.5)') 'Trust radius (STPMX):    ', STPMX
+      if (STPMX .lt. 0.05d0) then
+          write(*,*) 'Note: Using reduced trust radius for better stability'
+      endif
+      write(*,*) '=========================================='
       write(*,*) ''
       
 C     Check if this is first step (no MECP.state file exists)
@@ -148,9 +172,9 @@ C     Compute the Effective Gradient (ORIGINAL ALGORITHM)
       CALL Effective_Gradient(Nx, Ea_2, Eb_2, Ga_2, Gb_2, 
      &                        ParG, PerpG, G_2)
      
-C     Perform BFGS update (ORIGINAL ALGORITHM)
+C     Perform BFGS update with configurable trust radius
       CALL UpdateX(Nx, Nstep, first_step, X_1, X_2, X_3, 
-     &             G_1, G_2, IH_1, IH_2)
+     &             G_1, G_2, IH_1, IH_2, STPMX)
      
 C     Test convergence (now with dynamic thresholds)
       CALL TestConvergence(Nx, natom_actual, Nstep, AtNum, 
@@ -199,6 +223,8 @@ C     Error handling for argument parsing
 103   write(*,*) 'Error: Invalid value for --tdxmax: ', trim(arg)
       stop
 104   write(*,*) 'Error: Invalid value for --tdxrms: ', trim(arg)
+      stop
+105   write(*,*) 'Error: Invalid value for --stpmx: ', trim(arg)
       stop
 
 999   END
@@ -656,19 +682,20 @@ C=====================================================================
 C                           UpdateX
 C=====================================================================
        SUBROUTINE UpdateX(N,Nstep,FirstStep,X_1,X_2,X_3,G_1,G_2,
-     &                   HI_1,HI_2)
+     &                   HI_1,HI_2,STPMX)
        implicit none
        
        ! Specially Adapted BFGS routine from Numerical Recipes
+       ! Modified to accept STPMX as parameter instead of using fixed value
        
        integer i, j, k, n, Nstep
        logical FirstStep
        double precision X_1(N), X_2(N), G_1(N), G_2(N)
        double precision HI_1(N,N), X_3(N), HI_2(N,N)
+       double precision STPMX  ! Now passed as parameter
        
        double precision stpmax, DelG(N), HDelG(N), ChgeX(N), DelX(N), w(N), fac,
-     & fad, fae, sumdg, sumdx, stpl, lgstst, STPMX
-       parameter (STPMX = 0.1d0)
+     & fad, fae, sumdg, sumdx, stpl, lgstst
        
        stpmax = STPMX * N
        IF (FirstStep) THEN
@@ -825,7 +852,7 @@ C     Write header for first step
           write(*,'(A)') '  =========================================='
           write(*,'(A)') '       Geometry Optimization of an MECP'
           write(*,'(A)') '       Original: J. N. Harvey, March 1999'
-          write(*,'(A)') '       baneMECP v1.0, Sept. 2025'
+          write(*,'(A)') '       baneMECP v1.1, Sept. 2025'
           write(*,'(A)') '       modified from sobMECP@sobereva'
           write(*,'(A)') '       feedback: banerxmd@gmail.com'
           write(*,'(A)') '  =========================================='
