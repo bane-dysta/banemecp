@@ -1,8 +1,0 @@
-%prog external
-%geom init.xyz
-%InpTmplt1
-bash gamess.sh [xyzfile] -mrsf BHHLYP def2svp -mult 1 -root 1
-end
-%InpTmplt2
-bash gamess.sh [xyzfile] -mrsf BHHLYP def2svp -mult 3 -root 1
-end

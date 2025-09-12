@@ -81,10 +81,10 @@ C     Test convergence
           write(*,*) 'MECP optimization CONVERGED!'
           write(*,'(A,F18.10)') 'Final energy difference: ',
      &                          ABS(Ea_2 - Eb_2)
-C         Write convergence status
-          OPEN(UNIT=98, FILE='convg.tmp')
-          WRITE(98,*) 'CONVERGED'
-          CLOSE(98)
+C         Write convergence status and criteria
+          CALL WriteConvergenceInfo('CONVERGED', Nx, natom_actual, 
+     &                              Nstep, Ea_2, Eb_2, X_2, X_3, 
+     &                              ParG, PerpG, G_2)
 C         Write final geometry
           CALL WriteXYZ('final.xyz', natom_actual, AtNum, X_3,
      &                  'MECP Converged')
@@ -92,10 +92,10 @@ C         Clean up state file
           OPEN(UNIT=99, FILE='MECP.state')
           CLOSE(99, STATUS='DELETE')
       ELSE
-C         Write convergence status  
-          OPEN(UNIT=98, FILE='convg.tmp')
-          WRITE(98,*) 'NOT_CONVERGED'
-          CLOSE(98)
+C         Write convergence status and criteria
+          CALL WriteConvergenceInfo('NOT_CONVERGED', Nx, natom_actual, 
+     &                              Nstep, Ea_2, Eb_2, X_2, X_3, 
+     &                              ParG, PerpG, G_2)
 C         Write new geometry for next iteration
           CALL WriteXYZ('new.xyz', natom_actual, AtNum, X_3,
      &                  'MECP Step')
@@ -105,6 +105,102 @@ C         Save current state
      &                    Ga_2, Gb_2, G_2)
       END IF
 
+      END
+
+
+C=====================================================================
+      SUBROUTINE WriteConvergenceInfo(status, Nx, Natom_actual, 
+     &                                 Nstep, Ea, Eb, X_2, X_3, 
+     &                                 ParG, PerpG, G)
+      implicit none
+      
+      CHARACTER*(*) status
+      INTEGER Nx, Natom_actual, Nstep, i
+      DOUBLE PRECISION Ea, Eb, X_2(Nx), X_3(Nx), ParG(Nx)
+      DOUBLE PRECISION PerpG(Nx), G(Nx)
+      
+      CHARACTER*3 flags(5)
+      LOGICAL PConv(5)
+      DOUBLE PRECISION DeltaX(Nx), DE, DXMax, DXRMS, GMax, GRMS
+      DOUBLE PRECISION PpGRMS, PGRMS
+      DOUBLE PRECISION TDE, TDXMax, TDXRMS, TGMax, TGRMS
+      PARAMETER (TDE=5.d-5,TDXMax=4.d-3,TDXRMS=2.5d-3)
+      PARAMETER (TGMax=7.d-4,TGRMS=5.d-4)
+
+C     Calculate convergence criteria
+      DE = ABS(Ea - Eb)
+      DXMax = 0.d0
+      DXRMS = 0.d0
+      GMax = 0.d0
+      GRMS = 0.d0
+      PpGRMS = 0.d0
+      PGRMS = 0.d0
+      
+      DO I = 1, Nx
+          DeltaX(i) = X_3(i) - X_2(i)
+          IF (ABS(DeltaX(i)) .gt. DXMax) DXMax = ABS(DeltaX(i))
+          DXRMS = DXRMS + DeltaX(i)**2
+          IF (ABS(G(i)) .gt. Gmax) Gmax = ABS(G(i))
+          GRMS = GRMS + G(i)**2
+          PpGRMS = PpGRMS + PerpG(i)**2
+          PGRMS = PGRMS + ParG(i)**2
+      END DO
+      
+      DXRMS = SQRT(DXRMS / Nx)
+      GRMS = SQRT(GRMS / Nx)
+      PpGRMS= SQRT(PpGRMS / Nx)
+      PGRMS = SQRT(PGRMS / Nx)
+
+C     Check convergence flags
+      do i = 1, 5
+          flags(i) = " NO"
+          PConv(i) = .false.
+      end do
+
+      IF (GMax .lt. TGMax) THEN
+          PConv(1) = .true.
+          flags(1) = "YES"
+      END IF
+      IF (GRMS .lt. TGRMS) THEN
+          PConv(2) = .true.
+          flags(2) = "YES"
+      END IF
+      IF (DXMax .lt. TDXMax) THEN
+          PConv(3) = .true.
+          flags(3) = "YES"
+      END IF
+      IF (DXRMS .lt. TDXRMS) THEN
+          PConv(4) = .true.
+          flags(4) = "YES"
+      END IF
+      IF (DE .lt. TDE) THEN
+          PConv(5) = .true.
+          flags(5) = "YES"
+      END IF
+
+C     Write to convg.tmp file
+      OPEN(UNIT=98, FILE='convg.tmp')
+      WRITE(98,'(A)') trim(status)
+      WRITE(98,'(A,I4)') 'Step: ', Nstep
+      WRITE(98,'(A,F20.10)') 'Energy_State_1: ', Ea
+      WRITE(98,'(A,F20.10)') 'Energy_State_2: ', Eb
+      WRITE(98,'(A,F20.10)') 'Energy_Gap: ', DE
+      WRITE(98,'(A)') 'Convergence_Criteria:'
+      WRITE(98,'(A,F12.6,A,F9.6,A,A3)') 
+     &    'Max_Gradient: ', GMax, ' (', TGMax, ') ', flags(1)
+      WRITE(98,'(A,F12.6,A,F9.6,A,A3)') 
+     &    'RMS_Gradient: ', GRMS, ' (', TGRMS, ') ', flags(2)
+      WRITE(98,'(A,F12.6,A,F9.6,A,A3)') 
+     &    'Max_Displacement: ', DXMax, ' (', TDXMax, ') ', flags(3)
+      WRITE(98,'(A,F12.6,A,F9.6,A,A3)') 
+     &    'RMS_Displacement: ', DXRMS, ' (', TDXRMS, ') ', flags(4)
+      WRITE(98,'(A,F12.6,A,F9.6,A,A3)') 
+     &    'Energy_Gap_Conv: ', DE, ' (', TDE, ') ', flags(5)
+      WRITE(98,'(A,F12.6)') 'Parallel_Gradient_RMS: ', PGRMS
+      WRITE(98,'(A,F12.6)') 'Perpendicular_Gradient_RMS: ', PpGRMS
+      CLOSE(98)
+      
+      RETURN
       END
 
 
@@ -601,12 +697,13 @@ C=====================================================================
           PConv(5) = .true.
           flags(5) = "YES"
       END IF
-      
+
+      Nstep = Nstep + 1 
       IF (PConv(1) .and. PConv(2) .and. PConv(3) .and. 
      &    PConv(4) .and. PConv(5)) THEN
           Conv = 1
       ELSE
-          Nstep = Nstep + 1
+          Conv = 0
       END IF
 
 C     Write header for first step

@@ -18,9 +18,10 @@ namespace fs = std::filesystem;
 // =================================================================================
 struct ControlParams {
     int maxcyc = 50;
-    std::string tmpdir = "./tmp";
+    std::string tmpdir = ".";
     bool keeptmp = false;
     bool debug = false;
+    bool restart = false;
     
     void print_debug_info() const {
         if (debug) {
@@ -29,6 +30,7 @@ struct ControlParams {
             std::cout << "tmpdir  = " << tmpdir << std::endl;
             std::cout << "keeptmp = " << (keeptmp ? "true" : "false") << std::endl;
             std::cout << "debug   = " << (debug ? "true" : "false") << std::endl;
+            std::cout << "restart = " << (restart ? "true" : "false") << std::endl;
             std::cout << "===================================\n" << std::endl;
         }
     }
@@ -215,6 +217,10 @@ private:
                     std::transform(value.begin(), value.end(), value.begin(),
                                    [](unsigned char c){ return std::tolower(c); });
                     control.debug = (value == "true" || value == "yes" || value == "1");
+                } else if (key == "restart") {  // æ–°å¢žrestartå‚æ•°è§£æž
+                    std::transform(value.begin(), value.end(), value.begin(),
+                                   [](unsigned char c){ return std::tolower(c); });
+                    control.restart = (value == "true" || value == "yes" || value == "1");
                 } else {
                     std::cerr << "Warning: Unknown control parameter '" << key << "'" << std::endl;
                 }
@@ -303,6 +309,7 @@ public:
         m_tmpdir = m_input.control.tmpdir;
         m_keeptmp = m_input.control.keeptmp;
         m_debug = m_input.control.debug;
+        m_restart = m_input.control.restart;
     }
     
     bool run() {
@@ -311,10 +318,11 @@ public:
         
         if (!initialize()) return false;
         
-        for (int i = 1; i <= m_max_iter; ++i) {
+        for (int i = m_current_step; i <= m_max_iter; ++i) {
             std::cout << "\n===================================================\n"
                       << " MECP Iteration " << i << " (max: " << m_max_iter << ")"
                       << "\n===================================================\n";
+            std::cout.flush();
             if (!run_iteration(i)) {
                 std::cerr << "Iteration " << i << " failed." << std::endl;
                 cleanup_if_needed();
@@ -349,6 +357,8 @@ private:
     std::string m_tmpdir;
     bool m_keeptmp;
     bool m_debug;
+    bool m_restart;       // æ–°å¢žï¼šrestartæŽ§åˆ¶
+    int m_current_step = 1; // æ–°å¢žï¼šå½"å‰æ­¥æ•°è·Ÿè¸ª
     InputParser m_input;
     ConfigParser m_config;
     XYZ m_initial_geom;
@@ -357,28 +367,116 @@ private:
     std::string m_base_name;
     bool m_is_external = false;
     
+    // æ–°å¢žï¼šä»Žconvg.tmpè¯»å–æ­¥æ•°
+    int read_step_from_convg() {
+        if (!fs::exists("convg.tmp")) {
+            if (m_debug) {
+                std::cout << "Debug: convg.tmp not found for restart step detection" << std::endl;
+            }
+            return -1;
+        }
+        
+        std::string content = read_file("convg.tmp");
+        if (content.empty()) {
+            if (m_debug) {
+                std::cout << "Debug: convg.tmp is empty" << std::endl;
+            }
+            return -1;
+        }
+        
+        // è§£æžæ­¥æ•°ï¼šStep:   37
+        std::regex step_regex(R"(Step:\s*(\d+))");
+        std::smatch match;
+        
+        if (std::regex_search(content, match, step_regex)) {
+            int step = std::stoi(match[1].str());
+            if (m_debug) {
+                std::cout << "Debug: Found step " << step << " in convg.tmp" << std::endl;
+            }
+            return step;
+        }
+        
+        if (m_debug) {
+            std::cout << "Debug: Could not parse step number from convg.tmp" << std::endl;
+        }
+        return -1;
+    }
+    
+    // æ–°å¢žï¼šé€‰æ‹©æ€§æ¸…ç†æ–‡ä»¶
+    void cleanup_files_selective(bool preserve_restart_files = false) {
+        if (m_debug) {
+            std::cout << "Debug: Selective cleanup (preserve_restart_files=" 
+                      << (preserve_restart_files ? "true" : "false") << ")" << std::endl;
+        }
+        
+        std::vector<std::string> patterns_to_clean = {
+            "MECP.x", "MECP_temp.f", "*.log", "*.gms", "*.gjf", "*.chk", "new.xyz", "final.xyz"
+        };
+        
+        if (!preserve_restart_files) {
+            // å¦‚æžœä¸ä¿ç•™é‡å¯æ–‡ä»¶ï¼Œåˆ™æ¸…ç†æ‰€æœ‰æ–‡ä»¶
+            patterns_to_clean.insert(patterns_to_clean.begin(), 
+                {"astep*", "MECP.state", "convg.tmp", "opt.trj"});
+        }
+        
+        for (const auto& pattern : patterns_to_clean) {
+            std::string prefix = pattern.substr(0, pattern.find('*'));
+            std::string suffix = pattern.substr(pattern.find('*') + 1);
+            if (pattern.find('*') == std::string::npos) {
+                prefix = pattern;
+                suffix = "";
+            }
+            for (const auto& entry : fs::directory_iterator(".")) {
+                std::string filename = entry.path().filename().string();
+                bool match = false;
+                if (pattern.find('*') == std::string::npos) {
+                    if (filename == pattern) match = true;
+                } else {
+                    if (filename.rfind(prefix, 0) == 0 && (suffix.empty() || (filename.length() >= suffix.length() && filename.substr(filename.length() - suffix.length()) == suffix))) {
+                       match = true;
+                    }
+                }
+                if(match) {
+                    if (m_debug) {
+                        std::cout << "Debug: Removing file: " << filename << std::endl;
+                    }
+                    fs::remove(entry.path());
+                }
+            }
+        }
+    }
+    
     bool initialize() {
         m_base_name = m_input.geom_file.stem().string();
         
         // Store original directory
         m_original_dir = fs::current_path();
-        
+
         // Create and change to temporary directory if specified
         if (m_tmpdir != "." && m_tmpdir != "./" && !m_tmpdir.empty()) {
             try {
+                // Remove existing tmpdir if it exists to avoid conflicts
+                if (fs::exists(m_tmpdir)) {
+                    if (m_debug) {
+                        std::cout << "Debug: Removing existing tmpdir: " << m_tmpdir << std::endl;
+                    }
+                    fs::remove_all(m_tmpdir);
+                }
+
+                // Create fresh tmpdir and change to it
                 fs::create_directories(m_tmpdir);
                 fs::current_path(m_tmpdir);
                 if (m_debug) {
                     std::cout << "Debug: Created and changed to temporary directory: " << m_tmpdir << std::endl;
                     std::cout << "Debug: Original directory: " << m_original_dir << std::endl;
                 }
-                
+
                 // Copy necessary files to tmp directory
                 fs::path geom_src = m_original_dir / m_input.geom_file;
                 fs::path banemecp_src = m_original_dir / "baneMECP.f";
-                
+
                 if (fs::exists(geom_src)) {
-                    fs::copy_file(geom_src, m_input.geom_file.filename());
+                    fs::copy_file(geom_src, m_input.geom_file.filename(), fs::copy_options::overwrite_existing);
                     if (m_debug) {
                         std::cout << "Debug: Copied geometry file to tmp directory" << std::endl;
                     }
@@ -386,9 +484,9 @@ private:
                     std::cerr << "Error: Geometry file not found: " << geom_src << std::endl;
                     return false;
                 }
-                
+
                 if (fs::exists(banemecp_src)) {
-                    fs::copy_file(banemecp_src, "baneMECP.f");
+                    fs::copy_file(banemecp_src, "baneMECP.f", fs::copy_options::overwrite_existing);
                     if (m_debug) {
                         std::cout << "Debug: Copied baneMECP.f to tmp directory" << std::endl;
                     }
@@ -396,7 +494,7 @@ private:
                     std::cerr << "Error: baneMECP.f not found: " << banemecp_src << std::endl;
                     return false;
                 }
-                
+
             } catch (const fs::filesystem_error& e) {
                 std::cerr << "Warning: Failed to setup tmpdir '" << m_tmpdir 
                           << "': " << e.what() << ". Using current directory." << std::endl;
@@ -410,13 +508,54 @@ private:
             std::cerr << "Error: Could not read initial geometry from " << m_input.geom_file.filename() << std::endl;
             return false;
         }
-        cleanup_files();
+        
+        // é‡å¯é€»è¾'å¤„ç†
+        bool has_state_file = fs::exists("MECP.state");
+        bool has_convg_file = fs::exists("convg.tmp");
+        bool should_restart = m_restart && (has_state_file || has_convg_file);
+        
+        if (should_restart) {
+            std::cout << ">>> Found restart files. Attempting to restart optimization... <<<" << std::endl;
+            if (m_debug) {
+                std::cout << "Debug: restart=true, MECP.state exists=" << (has_state_file ? "yes" : "no") 
+                          << ", convg.tmp exists=" << (has_convg_file ? "yes" : "no") << std::endl;
+            }
+            
+            // ä»Žconvg.tmpè¯»å–æ­¥æ•°
+            int last_step = read_step_from_convg();
+            if (last_step > 0) {
+                m_current_step = last_step + 1;  // ä¸‹ä¸€æ­¥
+                std::cout << ">>> Restarting from step " << m_current_step << " (last completed: " << last_step << ") <<<" << std::endl;
+            } else {
+                std::cout << ">>> Could not determine restart step, starting from step 1 <<<" << std::endl;
+                m_current_step = 1;
+            }
+            
+            // é€‰æ‹©æ€§æ¸…ç†ï¼Œä¿ç•™é‡å¯ç›¸å…³æ–‡ä»¶
+            cleanup_files_selective(true);
+        } else {
+            if (has_state_file && !m_restart) {
+                std::cout << ">>> Found MECP.state but restart=false. Starting fresh... <<<" << std::endl;
+            } else if (!has_state_file && !has_convg_file) {
+                std::cout << ">>> No restart files found. Starting fresh optimization... <<<" << std::endl;
+            }
+            
+            // å…¨é¢æ¸…ç†
+            cleanup_files_selective(false);
+            m_current_step = 1;
+        }
+        
         if (!compile_mecp_solver(m_initial_geom.atom_count)) {
              std::cerr << "Error: Failed to compile MECP solver." << std::endl;
              return false;
         }
-        fs::copy(m_input.geom_file.filename(), "astep1.xyz");
-        append_to_trajectory("astep1.xyz");
+        
+        // å¦‚æžœä¸æ˜¯é‡å¯æˆ–è€…æ˜¯ç¬¬ä¸€æ­¥ï¼Œå‡†å¤‡ç¬¬ä¸€æ­¥å‡ ä½•
+        if (!should_restart || m_current_step == 1) {
+            fs::copy(m_input.geom_file.filename(), "astep1.xyz");
+            append_to_trajectory("astep1.xyz");
+        }
+        
         return true;
     }
     
@@ -461,7 +600,7 @@ private:
                 }
             } else {
                 // If working in current directory, clean up files normally
-                cleanup_files();
+                cleanup_files_selective(false);
             }
         } else {
             if (m_debug) {
@@ -496,12 +635,24 @@ private:
                     std::cout << "Debug: Using config file: " << path << std::endl;
                 }
                 // Copy config file to working directory if we're in tmpdir
+                bool parse_success;
                 if (m_tmpdir != "." && m_tmpdir != "./" && !m_tmpdir.empty()) {
                     fs::copy_file(path, conf_name, fs::copy_options::overwrite_existing);
-                    return m_config.parse(conf_name);
+                    parse_success = m_config.parse(conf_name);
                 } else {
-                    return m_config.parse(path);
+                    parse_success = m_config.parse(path);
                 }
+                
+                if (parse_success) {
+                    // Check if RUN_CMD exists in [main] section
+                    if (m_config.config.count("main") == 0 || m_config.config["main"].count("RUN_CMD") == 0) {
+                        if (m_debug) {
+                            std::cout << "Debug: RUN_CMD not found in config. Switching to external mode." << std::endl;
+                        }
+                        m_is_external = true;
+                    }
+                }
+                return parse_success;
             }
         }
         if (!m_is_external) {
@@ -509,42 +660,6 @@ private:
              return false;
         }
         return true;
-    }
-    
-    void cleanup_files() {
-        if (m_debug) {
-            std::cout << "Debug: Cleaning up temporary files..." << std::endl;
-        }
-        const std::vector<std::string> patterns = {
-            "astep*", "MECP.state", "convg.tmp", "new.xyz", "final.xyz", 
-            "MECP.x", "MECP_temp.f", "*.log", "*.gms", "*.gjf", "*.chk"
-        };
-        for (const auto& pattern : patterns) {
-            std::string prefix = pattern.substr(0, pattern.find('*'));
-            std::string suffix = pattern.substr(pattern.find('*') + 1);
-            if (pattern.find('*') == std::string::npos) {
-                prefix = pattern;
-                suffix = "";
-            }
-            for (const auto& entry : fs::directory_iterator(".")) {
-                std::string filename = entry.path().filename().string();
-                bool match = false;
-                if (pattern.find('*') == std::string::npos) {
-                    if (filename == pattern) match = true;
-                } else {
-                    if (filename.rfind(prefix, 0) == 0 && (suffix.empty() || (filename.length() >= suffix.length() && filename.substr(filename.length() - suffix.length()) == suffix))) {
-                       match = true;
-                    }
-                }
-                if(match) {
-                    if (m_debug) {
-                        std::cout << "Debug: Removing file: " << filename << std::endl;
-                    }
-                    fs::remove(entry.path());
-                }
-            }
-        }
-        if (fs::exists("opt.trj")) fs::remove("opt.trj");
     }
     
     bool compile_mecp_solver(int natom) {
@@ -592,6 +707,8 @@ private:
             replace_all(tmpl, "[geom]", geom_str);
             replace_all(tmpl, "[name]", step_name);
             replace_all(tmpl, "[xyzfile]", xyz_file);
+            replace_all(tmpl, "[nstep]", std::to_string(step));
+            replace_all(tmpl, "[tmpdir]", m_tmpdir);
             if (step == 1) {
                 tmpl = std::regex_replace(tmpl, std::regex(R"(\[.*?\])"), "");
             } else {
@@ -638,7 +755,20 @@ private:
     bool extract_results(const std::string& step_name, const std::string& xyz_file) {
          XYZ current_geom;
         if (!current_geom.read(xyz_file)) return false;
-        std::string output_suffix = m_is_external ? "log" : m_config.config["main"]["OUTPUT_SUFFIX"];
+        std::string output_suffix;
+        if (m_is_external) {
+            // In external mode, try to get OUTPUT_SUFFIX from config, otherwise use default
+            if (m_config.config.count("main") > 0 && m_config.config["main"].count("OUTPUT_SUFFIX") > 0) {
+                output_suffix = m_config.config["main"]["OUTPUT_SUFFIX"];
+            } else {
+                output_suffix = "gms"; // Default for external mode
+                if (m_debug) {
+                    std::cout << "Debug: Using default OUTPUT_SUFFIX 'gms' for external mode" << std::endl;
+                }
+            }
+        } else {
+            output_suffix = m_config.config["main"]["OUTPUT_SUFFIX"];
+        }
         auto extract_single_state = [&](int state_num) {
             std::string state_type = m_input.grp_tmplt.at(state_num == 1 ? "state1" : "state2");
             const auto& rules = m_config.config.at(state_type);
@@ -653,26 +783,97 @@ private:
             }
             std::string energy = e_match[1].str();
             std::string gard_locate = rules.at("GARD.Loacte");
-            size_t gard_pos = content.find(gard_locate);
+            
+            // Get GARD.LoacteCount parameter, default to 1 (first occurrence)
+            int locate_count = 1;
+            if (rules.count("GARD.LoacteCount") > 0) {
+                try {
+                    locate_count = std::stoi(rules.at("GARD.LoacteCount"));
+                } catch (const std::exception& e) {
+                    if (m_debug) {
+                        std::cerr << "Debug: Invalid GARD.LoacteCount, using default value 1" << std::endl;
+                    }
+                    locate_count = 1;
+                }
+            }
+            
+            // Find the Nth occurrence of gard_locate
+            size_t gard_pos = std::string::npos;
+            size_t search_pos = 0;
+            for (int i = 0; i < locate_count; ++i) {
+                gard_pos = content.find(gard_locate, search_pos);
+                if (gard_pos == std::string::npos) {
+                    break;
+                }
+                search_pos = gard_pos + 1; // Move past current match for next search
+            }
+            
             if (gard_pos == std::string::npos) {
                 std::cerr << "Error: Could not locate gradient block in " << output_file << std::endl;
+                if (m_debug) {
+                    std::cerr << "Debug: Looking for gradient marker (occurrence #" << locate_count << "): '" << gard_locate << "'" << std::endl;
+                }
                 return false;
+            }
+            if (m_debug) {
+                std::cout << "Debug: Found gradient block marker at position " << gard_pos << std::endl;
+                std::cout << "Debug: Gradient marker: '" << gard_locate << "'" << std::endl;
             }
             std::stringstream content_stream(content.substr(gard_pos));
             std::string line;
             std::getline(content_stream, line);
+            if (m_debug) {
+                std::cout << "Debug: First line after marker: '" << line << "'" << std::endl;
+            }
             int n_skip = std::stoi(rules.at("GARD.NLineSkip"));
-            for (int i = 0; i < n_skip; ++i) std::getline(content_stream, line);
+            if (m_debug) {
+                std::cout << "Debug: Skipping " << n_skip << " lines" << std::endl;
+            }
+            for (int i = 0; i < n_skip; ++i) {
+                std::getline(content_stream, line);
+                if (m_debug) {
+                    std::cout << "Debug: Skipped line " << (i+1) << ": '" << line << "'" << std::endl;
+                }
+            }
             std::vector<int> cols;
             std::stringstream ss(rules.at("GARD.TargetColumns"));
             std::string col_str;
             while(std::getline(ss, col_str, ',')) cols.push_back(std::stoi(col_str));
             std::string end_by = rules.at("GARD.EndBy");
+            
+            // Get GRAD.Type parameter to determine if we need to negate gradients
+            // Default is "force" (no negation) for backward compatibility
+            std::string grad_type = "force";
+            if (rules.count("GRAD.Type") > 0) {
+                grad_type = rules.at("GRAD.Type");
+                std::transform(grad_type.begin(), grad_type.end(), grad_type.begin(),
+                              [](unsigned char c){ return std::tolower(c); });
+            }
+            
+            // Determine if gradients need to be negated
+            bool negate_gradients = (grad_type == "grad");
+            double gradient_factor = negate_gradients ? -1.0 : 1.0;
+            
+            if (m_debug) {
+                std::cout << "Debug: GRAD.Type = '" << grad_type << "', gradient_factor = " 
+                          << gradient_factor << std::endl;
+            }
+            
             std::stringstream grad_file_content;
             grad_file_content << current_geom.atom_count << "\n";
-            grad_file_content << std::fixed << std::setprecision(10) << std::stod(energy) << "\n";
+            try {
+                grad_file_content << std::fixed << std::setprecision(10) << std::stod(energy) << "\n";
+            } catch (const std::exception& e) {
+                std::cerr << "Error: Failed to convert energy string to double." << std::endl;
+                std::cerr << "Energy string: '" << energy << "'" << std::endl;
+                std::cerr << "Exception: " << e.what() << std::endl;
+                return false;
+            }
             for (int i = 0; i < current_geom.atom_count; ++i) {
                 std::getline(content_stream, line);
+                if (m_debug) {
+                    std::cout << "Debug: Reading gradient line " << (i+1) << " for atom " << current_geom.symbols[i] << ": '" << line << "'" << std::endl;
+                }
                 if ((!end_by.empty() && line.find(end_by) != std::string::npos) || (end_by.empty() && line.find_first_not_of(" \t\n\r") == std::string::npos)) {
                     std::cerr << "Error: Premature end of gradient block." << std::endl;
                     return false;
@@ -682,9 +883,37 @@ private:
                 std::string token;
                 while(line_ss >> token) tokens.push_back(token);
                 grad_file_content << current_geom.symbols[i] << "    ";
-                grad_file_content << std::stod(tokens.at(cols[0]-1)) << "    ";
-                grad_file_content << std::stod(tokens.at(cols[1]-1)) << "    ";
-                grad_file_content << std::stod(tokens.at(cols[2]-1)) << "\n";
+                
+                try {
+                    // Apply gradient_factor to handle force vs gradient data
+                    double grad_x = std::stod(tokens.at(cols[0]-1)) * gradient_factor;
+                    double grad_y = std::stod(tokens.at(cols[1]-1)) * gradient_factor;
+                    double grad_z = std::stod(tokens.at(cols[2]-1)) * gradient_factor;
+                    
+                    grad_file_content << std::fixed << std::setprecision(10) 
+                                     << grad_x << "    " << grad_y << "    " << grad_z << "\n";
+                                     
+                    if (m_debug && i == 0) {  // Only show debug for first atom to avoid spam
+                        std::cout << "Debug: Applied gradient_factor " << gradient_factor 
+                                 << " to first atom gradients" << std::endl;
+                    }
+                } catch (const std::exception& e) {
+                    std::cerr << "Error: Failed to convert gradient data to double." << std::endl;
+                    std::cerr << "Line: '" << line << "'" << std::endl;
+                    std::cerr << "Tokens count: " << tokens.size() << std::endl;
+                    std::cerr << "Target columns: " << cols[0] << ", " << cols[1] << ", " << cols[2] << std::endl;
+                    if (tokens.size() >= cols[0]) {
+                        std::cerr << "Token[" << cols[0]-1 << "]: '" << tokens.at(cols[0]-1) << "'" << std::endl;
+                    }
+                    if (tokens.size() >= cols[1]) {
+                        std::cerr << "Token[" << cols[1]-1 << "]: '" << tokens.at(cols[1]-1) << "'" << std::endl;
+                    }
+                    if (tokens.size() >= cols[2]) {
+                        std::cerr << "Token[" << cols[2]-1 << "]: '" << tokens.at(cols[2]-1) << "'" << std::endl;
+                    }
+                    std::cerr << "Exception: " << e.what() << std::endl;
+                    return false;
+                }
             }
             return write_file(step_name + ".grad" + std::to_string(state_num), grad_file_content.str());
         };
@@ -698,11 +927,25 @@ private:
              std::cerr << "Warning: convg.tmp not found. Assuming not converged." << std::endl;
             return false;
         }
-        std::string status = read_file("convg.tmp");
-        
+
+        // Read only the first line to get the status
+        std::ifstream file("convg.tmp");
+        if (!file.is_open()) {
+            std::cerr << "Warning: Cannot open convg.tmp. Assuming not converged." << std::endl;
+            return false;
+        }
+
+        std::string status;
+        std::getline(file, status);
+        file.close();
+
         // Trim whitespace from status string
         status.erase(0, status.find_first_not_of(" \t\n\r"));
         status.erase(status.find_last_not_of(" \t\n\r") + 1);
+
+        if (m_debug) {
+            std::cout << "Debug: Convergence status from first line: '" << status << "'" << std::endl;
+        }
 
         if (status == "CONVERGED") {
             if (!fs::exists("final.xyz")) {
@@ -712,20 +955,151 @@ private:
             append_to_trajectory("final.xyz");
             return true;
         } else {
-            append_to_trajectory("new.xyz");
+            // Only append new.xyz if it exists
+            if (fs::exists("new.xyz")) {
+                append_to_trajectory("new.xyz");
+            } else if (m_debug) {
+                std::cout << "Debug: new.xyz not found for trajectory append" << std::endl;
+            }
             return false;
         }
     }
     
+    std::string parse_convergence_info() {
+        if (!fs::exists("convg.tmp")) {
+            return "Convergence info not available";
+        }
+        
+        std::string content = read_file("convg.tmp");
+        if (content.empty()) {
+            return "Convergence info not available";
+        }
+        
+        // Parse the convergence information
+        std::map<std::string, std::string> conv_data;
+        std::stringstream ss(content);
+        std::string line;
+        
+        while (std::getline(ss, line)) {
+            // Remove leading/trailing whitespace
+            line.erase(0, line.find_first_not_of(" \t\n\r"));
+            line.erase(line.find_last_not_of(" \t\n\r") + 1);
+            
+            if (line.empty()) continue;
+            
+            // Parse different types of lines
+            if (line.find("Energy_Gap:") != std::string::npos) {
+                size_t pos = line.find(':');
+                if (pos != std::string::npos) {
+                    std::string value = line.substr(pos + 1);
+                    value.erase(0, value.find_first_not_of(" \t"));
+                    conv_data["Energy_Gap"] = value;
+                }
+            } else if (line.find("Max_Gradient:") != std::string::npos) {
+                size_t pos = line.find(':');
+                if (pos != std::string::npos) {
+                    std::string value = line.substr(pos + 1);
+                    value.erase(0, value.find_first_not_of(" \t"));
+                    // Extract just the current value (before any parentheses)
+                    size_t paren_pos = value.find('(');
+                    if (paren_pos != std::string::npos) {
+                        value = value.substr(0, paren_pos);
+                        value.erase(value.find_last_not_of(" \t") + 1);
+                    }
+                    conv_data["Max_Gradient"] = value;
+                }
+            } else if (line.find("RMS_Gradient:") != std::string::npos) {
+                size_t pos = line.find(':');
+                if (pos != std::string::npos) {
+                    std::string value = line.substr(pos + 1);
+                    value.erase(0, value.find_first_not_of(" \t"));
+                    size_t paren_pos = value.find('(');
+                    if (paren_pos != std::string::npos) {
+                        value = value.substr(0, paren_pos);
+                        value.erase(value.find_last_not_of(" \t") + 1);
+                    }
+                    conv_data["RMS_Gradient"] = value;
+                }
+            } else if (line.find("Max_Displacement:") != std::string::npos) {
+                size_t pos = line.find(':');
+                if (pos != std::string::npos) {
+                    std::string value = line.substr(pos + 1);
+                    value.erase(0, value.find_first_not_of(" \t"));
+                    size_t paren_pos = value.find('(');
+                    if (paren_pos != std::string::npos) {
+                        value = value.substr(0, paren_pos);
+                        value.erase(value.find_last_not_of(" \t") + 1);
+                    }
+                    conv_data["Max_Displacement"] = value;
+                }
+            } else if (line.find("RMS_Displacement:") != std::string::npos) {
+                size_t pos = line.find(':');
+                if (pos != std::string::npos) {
+                    std::string value = line.substr(pos + 1);
+                    value.erase(0, value.find_first_not_of(" \t"));
+                    size_t paren_pos = value.find('(');
+                    if (paren_pos != std::string::npos) {
+                        value = value.substr(0, paren_pos);
+                        value.erase(value.find_last_not_of(" \t") + 1);
+                    }
+                    conv_data["RMS_Displacement"] = value;
+                }
+            }
+        }
+        
+        // Format the convergence information
+        std::stringstream formatted;
+        formatted << "E=" << (conv_data.count("Energy_Gap") ? conv_data["Energy_Gap"] : "N/A");
+        formatted << " MaxF=" << (conv_data.count("Max_Gradient") ? conv_data["Max_Gradient"] : "N/A");
+        formatted << " RMSF=" << (conv_data.count("RMS_Gradient") ? conv_data["RMS_Gradient"] : "N/A");
+        formatted << " MaxD=" << (conv_data.count("Max_Displacement") ? conv_data["Max_Displacement"] : "N/A");
+        formatted << " RMSD=" << (conv_data.count("RMS_Displacement") ? conv_data["RMS_Displacement"] : "N/A");
+        
+        return formatted.str();
+    }
+
     void append_to_trajectory(const fs::path& xyz_path) {
         if (!fs::exists(xyz_path)) {
             std::cerr << "Warning: Cannot append to trajectory, file not found: " << xyz_path << std::endl;
             return;
         }
-        std::string content = read_file(xyz_path);
+        
+        // Read the xyz file
+        std::ifstream xyz_file(xyz_path);
+        if (!xyz_file.is_open()) {
+            std::cerr << "Warning: Cannot open xyz file for trajectory: " << xyz_path << std::endl;
+            return;
+        }
+        
+        // Read and modify the xyz content
+        std::stringstream modified_content;
+        std::string line;
+        int line_count = 0;
+        
+        while (std::getline(xyz_file, line)) {
+            line_count++;
+            if (line_count == 2) {  // Second line is the comment line in xyz format
+                // Replace comment with convergence information
+                std::string conv_info = parse_convergence_info();
+                modified_content << conv_info << "\n";
+                if (m_debug) {
+                    std::cout << "Debug: Replaced comment line with: " << conv_info << std::endl;
+                }
+            } else {
+                modified_content << line << "\n";
+            }
+        }
+        xyz_file.close();
+        
+        // Append to trajectory file
         std::ofstream traj_file("opt.trj", std::ios::app);
         if (traj_file.is_open()) {
-            traj_file << content;
+            traj_file << modified_content.str();
+            if (m_debug) {
+                std::cout << "Debug: Appended modified structure to trajectory file" << std::endl;
+            }
+        } else {
+            std::cerr << "Warning: Cannot open trajectory file for writing" << std::endl;
         }
     }
 };
@@ -744,6 +1118,7 @@ int main(int argc, char* argv[]) {
         std::cerr << "    tmpdir=./tmp" << std::endl;
         std::cerr << "    keeptmp=false" << std::endl;
         std::cerr << "    debug=false" << std::endl;
+        std::cerr << "    restart=true" << std::endl;
         std::cerr << "  end" << std::endl;
         std::cerr << "  %InpTmplt1 ... end" << std::endl;
         std::cerr << "  %InpTmplt2 ... end" << std::endl;

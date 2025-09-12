@@ -1,0 +1,26 @@
+%Prog gamess
+%Geom ro.xyz
+
+%Control
+maxcyc=50
+tmpdir=temp
+keeptmp=true
+restart=false
+end
+
+%InpTmplt1
+echo ">>>>> Start gamess calculation1"
+cp ../gamess.sh .
+bash gamess.sh [xyzfile] --iroot 1 --basename astep[nstep]_state1 >> mrsfout.tmp 2>&1
+end
+
+%InpTmplt2
+echo ">>>>> Start gamess calculation2"
+cp ../gamess.sh .
+bash gamess.sh [xyzfile] --iroot 2 --basename astep[nstep]_state2 >> mrsfout.tmp 2>&1
+end
+
+%GrpTmplt
+state1=mrsf1
+state2=mrsf2
+end

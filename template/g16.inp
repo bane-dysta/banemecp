@@ -1,5 +1,11 @@
 %Prog g16
 %Geom init.xyz
+%Control
+maxcyc=100
+tmpdir=.
+keeptmp=true
+restart=false
+end
 
 %InpTmplt1
 %chk=state1.chk
