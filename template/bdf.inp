@@ -64,10 +64,6 @@ $end
 
 end
 
-%InpTmplt2
-%echo BDF do not need to do the second calculation.
-end
-
 %GrpTmplt
 state1=sf1
 state2=sf2
