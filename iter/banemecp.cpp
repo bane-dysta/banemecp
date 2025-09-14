@@ -23,6 +23,14 @@ struct ControlParams {
     bool debug = false;
     bool restart = false;
     
+    // 新增收敛判据参数
+    double tde = 5e-5;        // 能量gap阈值
+    double tgmax = 7e-4;      // 最大梯度阈值  
+    double tgrms = 5e-4;      // RMS梯度阈值
+    double tdxmax = 4e-3;     // 最大位移阈值
+    double tdxrms = 2.5e-3;   // RMS位移阈值
+    double stpmx = 0.1;       // 置信半径/最大步长
+    
     void print_debug_info() const {
         if (debug) {
             std::cout << "\n=== Control Parameters (Debug) ===\n";
@@ -31,6 +39,13 @@ struct ControlParams {
             std::cout << "keeptmp = " << (keeptmp ? "true" : "false") << std::endl;
             std::cout << "debug   = " << (debug ? "true" : "false") << std::endl;
             std::cout << "restart = " << (restart ? "true" : "false") << std::endl;
+            std::cout << "=== Convergence Criteria ===\n";
+            std::cout << "tde     = " << tde << std::endl;
+            std::cout << "tgmax   = " << tgmax << std::endl;
+            std::cout << "tgrms   = " << tgrms << std::endl;
+            std::cout << "tdxmax  = " << tdxmax << std::endl;
+            std::cout << "tdxrms  = " << tdxrms << std::endl;
+            std::cout << "stpmx   = " << stpmx << std::endl;
             std::cout << "===================================\n" << std::endl;
         }
     }
@@ -179,7 +194,13 @@ private:
             {"tmpdir", [this](const std::string& v) { control.tmpdir = v; }},
             {"keeptmp", [this](const std::string& v) { control.keeptmp = (v == "true"); }},
             {"debug", [this](const std::string& v) { control.debug = (v == "true"); }},
-            {"restart", [this](const std::string& v) { control.restart = (v == "true"); }}
+            {"restart", [this](const std::string& v) { control.restart = (v == "true"); }},
+            {"tde", [this](const std::string& v) { control.tde = std::stod(v); }},
+            {"tgmax", [this](const std::string& v) { control.tgmax = std::stod(v); }},
+            {"tgrms", [this](const std::string& v) { control.tgrms = std::stod(v); }},
+            {"tdxmax", [this](const std::string& v) { control.tdxmax = std::stod(v); }},
+            {"tdxrms", [this](const std::string& v) { control.tdxrms = std::stod(v); }},
+            {"stpmx", [this](const std::string& v) { control.stpmx = std::stod(v); }}
         };
 
         while (std::getline(file, line)) {
@@ -201,10 +222,15 @@ private:
                 value.erase(value.find_last_not_of(" \t") + 1);
 
                 std::transform(key.begin(), key.end(), key.begin(), ::tolower);
-                std::transform(value.begin(), value.end(), value.begin(), ::tolower);
+                // 注意：value不要转换为小写，因为数值不需要
 
                 if (parsers.count(key)) {
-                    parsers[key](value);
+                    try {
+                        parsers[key](value);
+                    } catch (const std::exception& e) {
+                        std::cerr << "Warning: Failed to parse " << key << " = " << value 
+                                  << ", using default value. Error: " << e.what() << std::endl;
+                    }
                 }
             }
         }
@@ -349,6 +375,11 @@ private:
     std::string m_base_name;
     bool m_is_external = false;
     
+    // New function: check if InpTmplt2 is provided
+    bool has_inp_tmplt2() const {
+        return !m_input.inp_tmplt2.empty();
+    }
+    
     // New function: read step number from convg.tmp
     int read_step_from_convg() {
         if (!fs::exists("convg.tmp")) {
@@ -434,6 +465,14 @@ private:
 
     bool initialize() {
         m_base_name = m_input.geom_file.stem().string();
+        
+        // Print information about InpTmplt2
+        if (m_debug) {
+            std::cout << "Debug: InpTmplt2 " << (has_inp_tmplt2() ? "provided" : "not provided") << std::endl;
+            if (!has_inp_tmplt2()) {
+                std::cout << "Debug: Second state calculation will be skipped" << std::endl;
+            }
+        }
         
         // Store original directory
         m_original_dir = fs::current_path();
@@ -634,14 +673,36 @@ private:
             if (m_debug) {
                 std::cout << "Debug: Assuming external script generates .grad files." << std::endl;
             }
-            if (!fs::exists(step_name + ".grad1") || !fs::exists(step_name + ".grad2")) {
-                std::cerr << "Error: External script did not generate required .grad files." << std::endl;
+            if (!fs::exists(step_name + ".grad1")) {
+                std::cerr << "Error: External script did not generate required .grad1 file." << std::endl;
+                return false;
+            }
+            // Only check for .grad2 if InpTmplt2 is provided
+            if (has_inp_tmplt2() && !fs::exists(step_name + ".grad2")) {
+                std::cerr << "Error: External script did not generate required .grad2 file." << std::endl;
                 return false;
             }
         } else {
             if (!extract_results(step_name, xyz_file)) return false;
         }
-        return execute_command("./MECP.x " + step_name, m_debug);
+
+        // 构建MECP.x命令
+        std::stringstream cmd_ss;
+        cmd_ss << "./MECP.x " << step_name;
+        cmd_ss << " --tde " << std::scientific << m_input.control.tde;
+        cmd_ss << " --tgmax " << std::scientific << m_input.control.tgmax; 
+        cmd_ss << " --tgrms " << std::scientific << m_input.control.tgrms;
+        cmd_ss << " --tdxmax " << std::scientific << m_input.control.tdxmax;
+        cmd_ss << " --tdxrms " << std::scientific << m_input.control.tdxrms;
+        cmd_ss << " --stpmx " << std::scientific << m_input.control.stpmx;
+
+        std::string mecp_cmd = cmd_ss.str();
+
+        if (m_debug) {
+            std::cout << "Debug: MECP command: " << mecp_cmd << std::endl;
+        }
+
+        return execute_command(mecp_cmd, m_debug);
     }
     
     bool prepare_qm_input(int step, const std::string& step_name, const std::string& xyz_file) {
@@ -665,14 +726,22 @@ private:
             return tmpl;
         };
         std::string input1 = process_template(m_input.inp_tmplt1);
-        std::string input2 = process_template(m_input.inp_tmplt2);
+        
         if (m_is_external) {
             if (!write_file(step_name + "_state1.sh", input1)) return false;
-            if (!write_file(step_name + "_state2.sh", input2)) return false;
+            // Only create state2 input if InpTmplt2 is provided
+            if (has_inp_tmplt2()) {
+                std::string input2 = process_template(m_input.inp_tmplt2);
+                if (!write_file(step_name + "_state2.sh", input2)) return false;
+            }
         } else {
             std::string suffix = m_config.config["main"]["INPUT_SUFFIX"];
             if (!write_file(step_name + "_state1." + suffix, input1)) return false;
-            if (!write_file(step_name + "_state2." + suffix, input2)) return false;
+            // Only create state2 input if InpTmplt2 is provided
+            if (has_inp_tmplt2()) {
+                std::string input2 = process_template(m_input.inp_tmplt2);
+                if (!write_file(step_name + "_state2." + suffix, input2)) return false;
+            }
         }
         return true;
     }
@@ -680,7 +749,12 @@ private:
     bool run_qm_calculations(const std::string& step_name) {
         if (m_is_external) {
             if (!execute_command("bash " + step_name + "_state1.sh", m_debug)) return false;
-            if (!execute_command("bash " + step_name + "_state2.sh", m_debug)) return false;
+            // Only run state2 if InpTmplt2 is provided
+            if (has_inp_tmplt2()) {
+                if (!execute_command("bash " + step_name + "_state2.sh", m_debug)) return false;
+            } else if (m_debug) {
+                std::cout << "Debug: Skipping state2 calculation - InpTmplt2 not provided" << std::endl;
+            }
         } else {
             std::string env = m_config.config["main"]["env"];
             std::string run_cmd_template = m_config.config["main"]["RUN_CMD"];
@@ -695,7 +769,12 @@ private:
                 return execute_command(env + "\n" + cmd, m_debug);
             };
             if (!run_single_state(1)) return false;
-            if (!run_single_state(2)) return false;
+            // Only run state2 if InpTmplt2 is provided
+            if (has_inp_tmplt2()) {
+                if (!run_single_state(2)) return false;
+            } else if (m_debug) {
+                std::cout << "Debug: Skipping state2 calculation - InpTmplt2 not provided" << std::endl;
+            }
         }
         return true;
     }
@@ -890,6 +969,7 @@ auto extract_single_state = [&](int state_num) {
             return write_file(step_name + ".grad" + std::to_string(state_num), grad_file_content.str());
         };
         if (!extract_single_state(1)) return false;
+        // Always extract second state results, regardless of whether InpTmplt2 was provided
         if (!extract_single_state(2)) return false;
         return true;
     }
@@ -1093,7 +1173,7 @@ int main(int argc, char* argv[]) {
         std::cerr << "    restart=true" << std::endl;
         std::cerr << "  end" << std::endl;
         std::cerr << "  %InpTmplt1 ... end" << std::endl;
-        std::cerr << "  %InpTmplt2 ... end" << std::endl;
+        std::cerr << "  %InpTmplt2 ... end (optional)" << std::endl;
         std::cerr << "  %GrpTmplt ... end" << std::endl;
         return 1;
     }
