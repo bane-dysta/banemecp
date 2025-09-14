@@ -917,7 +917,7 @@ auto extract_single_state = [&](int state_num) {
             }
             
             // Determine if gradients need to be negated
-            bool negate_gradients = (grad_type == "grad");
+            bool negate_gradients = (grad_type == "force");
             double gradient_factor = negate_gradients ? -1.0 : 1.0;
             
             if (m_debug) {

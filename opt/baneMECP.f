@@ -1,4 +1,4 @@
-PROGRAM MECP_Optimizer
+      PROGRAM MECP_Optimizer
       implicit none
 
 C     sobMECP--bane modified, 2025.9.11
@@ -371,11 +371,11 @@ C     Read gradient for state 1
       DO i = 1, Natom_actual
           k = 3*(i-1) + 1
           READ(11,*) element, Ga(k), Ga(k+1), Ga(k+2)
-C         Convert from force to gradient (negate)
-C         Assume input is in Hartree/Bohr, convert to Hartree/Ang
-          Ga(k) = -Ga(k) / bohr
-          Ga(k+1) = -Ga(k+1) / bohr
-          Ga(k+2) = -Ga(k+2) / bohr
+C         Assume gradients are already in correct sign (handled by C++ script)
+C         Only convert units from Hartree/Bohr to Hartree/Ang
+          Ga(k) = Ga(k) / bohr
+          Ga(k+1) = Ga(k+1) / bohr
+          Ga(k+2) = Ga(k+2) / bohr
       END DO
       CLOSE(11)
       
@@ -387,9 +387,11 @@ C     Read gradient for state 2
       DO i = 1, Natom_actual
           k = 3*(i-1) + 1
           READ(12,*) element, Gb(k), Gb(k+1), Gb(k+2)
-          Gb(k) = -Gb(k) / bohr
-          Gb(k+1) = -Gb(k+1) / bohr
-          Gb(k+2) = -Gb(k+2) / bohr
+C         Assume gradients are already in correct sign (handled by C++ script)
+C         Only convert units from Hartree/Bohr to Hartree/Ang
+          Gb(k) = Gb(k) / bohr
+          Gb(k+1) = Gb(k+1) / bohr
+          Gb(k+2) = Gb(k+2) / bohr
       END DO
       CLOSE(12)
       
