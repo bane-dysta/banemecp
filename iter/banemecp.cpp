@@ -336,6 +336,9 @@ public:
         // Print debug info if requested
         m_input.control.print_debug_info();
         
+        // Print algorithm-specific banner
+        print_algorithm_banner();
+
         if (!initialize()) return false;
         
         for (int i = m_current_step; i <= m_max_iter; ++i) {
@@ -700,6 +703,35 @@ private:
              return false;
         }
         return true;
+    }
+
+    void print_algorithm_banner() {
+        std::cout << "\n";
+        std::cout << "+=============================================================+\n";
+        std::cout << "|                       baneMECP v0.30                        |\n";
+        std::cout << "|                         Sept. 2025                          |\n";
+        std::cout << "|                     Author: Bane Dysta                      |\n";
+        std::cout << "+-------------------------------------------------------------+\n";
+
+        if (m_input.control.algorithm == "harvey") {
+            std::cout << "| Algorithm: Harvey                                           |\n";
+            std::cout << "| Reference: Theor. Chem. Acc., 1998, 99, 95                  |\n";
+            std::cout << "| Refers to:  sobMECP@sobereva                                |\n";
+        } else if (m_input.control.algorithm == "bpupd") {
+            std::cout << "| Algorithm: Updated Branching Plane                          |\n";
+            std::cout << "| Reference: J. Comput. Theory Chem., 2010, 6, 1538           |\n";
+            std::cout << "| Refers to:  XMECP@kalinite                                  |\n";
+        }
+
+        std::cout << "+-------------------------------------------------------------+\n";
+        std::cout << "| Email:  banerxmd@gmail.com                                  |\n";
+        std::cout << "| GitHub: https://github.com/bane-dysta/banemecp              |\n";
+        std::cout << "|                                                             |\n";
+        std::cout << "| Citation:                                                   |\n";
+        std::cout << "|   Chiyuan Wei, baneMECP program,                            |\n";
+        std::cout << "|   https://github.com/bane-dysta/banemecp                    |\n";
+        std::cout << "|   (accessed month day, year)                                |\n";
+        std::cout << "+=============================================================+\n\n";
     }
     
     bool compile_mecp_solver(int natom) {

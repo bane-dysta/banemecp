@@ -1032,16 +1032,8 @@ C=====================================================================
           Conv = 0
       END IF
 
-C     Write header for first step
+C     Write initial geometry for first step
       IF (Nstep .eq. 1) THEN
-          write(*,*)
-          write(*,'(A)') '  =========================================='
-          write(*,'(A)') '       Geometry Optimization of an MECP'
-          write(*,'(A)') '       Original: J. N. Harvey, March 1999'
-          write(*,'(A)') '       baneMECP v1.1, Sept. 2025'
-          write(*,'(A)') '       modified from sobMECP@sobereva'
-          write(*,'(A)') '       feedback: banerxmd@gmail.com'
-          write(*,'(A)') '  =========================================='
           write(*,*)
           write(*,'(A)') '  Initial Geometry:'
           DO i = 1, Natom_actual
