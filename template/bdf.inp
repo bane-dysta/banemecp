@@ -6,6 +6,7 @@ maxcyc=50
 tmpdir=temp
 keeptmp=true
 restart=false
+stpmx=0.05
 end
 
 %InpTmplt1

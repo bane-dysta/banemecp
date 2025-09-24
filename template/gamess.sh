@@ -1,23 +1,14 @@
 #!/bin/bash
 
 # 环境变量定义
-MOKIT_ENV='source ~/.bashrc
-conda activate mokit'
+MOKIT_ENV='source ~/.bashrc; conda activate mokit'
 G16_ENV='source /apps/gaussian16/env.sh'
 GMS_ENV='export PATH=$PATH:/apps/gamess/gamess_src'
 
 # 默认参数
-MEM=96
-NPROCS=36
-FUNCTIONAL="BHANDHLYP"
-BASIS="def2svp"
-CHARGE=0
-DFTTYP=""  # 空值表示自动映射
-MWORDS=300
-RUNTYP="GRADIENT"
-IROOT=""
-MULT=""   # 新增：多重度参数
-CUSTOM_BASENAME=""
+MEM=96; NPROCS=36; FUNCTIONAL="BHANDHLYP"; BASIS="def2svp"; CHARGE=0; DFTTYP=""
+MWORDS=300; RUNTYP="GRADIENT"; IROOT=""; MULT=""; CUSTOM_BASENAME=""
+FCHK_FILE=""  # RODFT波函数文件
 
 # 泛函映射表（Gaussian -> GAMESS）
 declare -A FUNCTIONAL_MAP
@@ -28,7 +19,10 @@ FUNCTIONAL_MAP["BHandHLYP"]="BHHLYP"
 
 # 函数：显示使用说明
 show_usage() {
-    echo "用法: $0 <xyz_file> [选项]"
+    echo "用法: $0 <input_file> [选项]"
+    echo "输入文件："
+    echo "  xyz文件：完整流程（G16 → MOKIT → GAMESS）"
+    echo "  fchk文件：从步骤4开始（MOKIT → GAMESS）"
     echo "选项："
     echo "  --mem <value>        内存大小 (默认: $MEM GB)"
     echo "  --nprocs <value>     CPU核心数 (默认: $NPROCS)"
@@ -39,150 +33,85 @@ show_usage() {
     echo "  --runtyp <value>     运行类型 ENERGY或GRADIENT (默认: $RUNTYP)"
     echo "  --iroot <value>      在TDDFT部分添加IROOT=n参数"
     echo "  --mult <value>       在TDDFT部分添加MULT=n参数（多重度）"
-    echo "  --basename <value>   自定义输入输出文件名前缀 (默认: 使用xyz文件名)"
+    echo "  --basename <value>   自定义输入输出文件名前缀 (默认: 使用输入文件名)"
     echo "  -h, --help           显示此帮助信息"
 }
 
 # 解析命令行参数
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --mem)
-            MEM="$2"
-            shift 2
-            ;;
-        --nprocs)
-            NPROCS="$2"
-            shift 2
-            ;;
-        --functional)
-            FUNCTIONAL="${2^^}"  # 转换为大写
-            shift 2
-            ;;
-        --basis)
-            BASIS="$2"
-            shift 2
-            ;;
-        --dfttyp)
-            DFTTYP="${2^^}"  # 转换为大写
-            shift 2
-            ;;
-        --mwords)
-            MWORDS="$2"
-            shift 2
-            ;;
-        --runtyp)
-            RUNTYP="${2^^}"  # 转换为大写
-            shift 2
-            ;;
-        --iroot)
-            IROOT="$2"
-            shift 2
-            ;;
-        --mult)
-            MULT="$2"
-            shift 2
-            ;;
-        --basename)
-            CUSTOM_BASENAME="$2"
-            shift 2
-            ;;
-        -h|--help)
-            show_usage
-            exit 0
-            ;;
-        -*)
-            echo "未知选项: $1"
-            show_usage
-            exit 1
-            ;;
-        *)
-            if [[ -z $XYZ_FILE ]]; then
-                XYZ_FILE="$1"
-            else
-                echo "错误: 多余的参数 $1"
-                show_usage
-                exit 1
-            fi
-            shift
-            ;;
+        --mem) MEM="$2"; shift 2;;
+        --nprocs) NPROCS="$2"; shift 2;;
+        --functional) FUNCTIONAL="${2^^}"; shift 2;;
+        --basis) BASIS="$2"; shift 2;;
+        --dfttyp) DFTTYP="${2^^}"; shift 2;;
+        --mwords) MWORDS="$2"; shift 2;;
+        --runtyp) RUNTYP="${2^^}"; shift 2;;
+        --iroot) IROOT="$2"; shift 2;;
+        --mult) MULT="$2"; shift 2;;
+        --basename) CUSTOM_BASENAME="$2"; shift 2;;
+        -h|--help) show_usage; exit 0;;
+        -*) echo "未知选项: $1"; show_usage; exit 1;;
+        *) if [[ -z $INPUT_FILE ]]; then INPUT_FILE="$1"; else echo "错误: 多余的参数 $1"; show_usage; exit 1; fi; shift;;
     esac
 done
 
-# 检查是否提供了xyz文件
-if [[ -z $XYZ_FILE ]]; then
-    echo "错误: 请提供xyz文件"
-    show_usage
+# 检查输入文件和参数
+[[ -z $INPUT_FILE ]] && { echo "错误: 请提供输入文件（xyz或fchk）"; show_usage; exit 1; }
+[[ ! -f $INPUT_FILE ]] && { echo "错误: 文件 $INPUT_FILE 不存在"; exit 1; }
+# 检查文件类型并设置相应变量
+if [[ "$INPUT_FILE" == *.xyz ]]; then
+    XYZ_FILE="$INPUT_FILE"
+    START_STEP=1
+    echo "检测到xyz文件，将执行完整流程（G16 → MOKIT → GAMESS）"
+elif [[ "$INPUT_FILE" == *.fchk ]]; then
+    FCHK_FILE="$INPUT_FILE"
+    START_STEP=4
+    echo "检测到fchk文件，将从步骤4开始执行（MOKIT → GAMESS）"
+else
+    echo "错误: 不支持的文件类型。请提供.xyz或.fchk文件"
     exit 1
 fi
 
-# 检查xyz文件是否存在
-if [[ ! -f $XYZ_FILE ]]; then
-    echo "错误: 文件 $XYZ_FILE 不存在"
-    exit 1
-fi
-
-# 验证RUNTYP参数
-if [[ "$RUNTYP" != "ENERGY" && "$RUNTYP" != "GRADIENT" ]]; then
-    echo "错误: RUNTYP必须是ENERGY或GRADIENT"
-    exit 1
-fi
-
-# 验证MULT参数（如果提供了的话）
-if [[ -n $MULT ]] && ! [[ "$MULT" =~ ^[1-9][0-9]*$ ]]; then
-    echo "错误: MULT必须是正整数"
-    exit 1
-fi
+[[ "$RUNTYP" != "ENERGY" && "$RUNTYP" != "GRADIENT" ]] && { echo "错误: RUNTYP必须是ENERGY或GRADIENT"; exit 1; }
+[[ -n $MULT ]] && ! [[ "$MULT" =~ ^[1-9][0-9]*$ ]] && { echo "错误: MULT必须是正整数"; exit 1; }
 
 # 确定文件名前缀
 if [[ -n $CUSTOM_BASENAME ]]; then
     BASENAME="$CUSTOM_BASENAME"
-    echo "使用自定义文件名前缀: $BASENAME"
 else
-    BASENAME=$(basename "$XYZ_FILE" .xyz)
-    echo "使用默认文件名前缀（基于xyz文件名）: $BASENAME"
+    if [[ -n $XYZ_FILE ]]; then
+        BASENAME=$(basename "$XYZ_FILE" .xyz)
+    else
+        BASENAME=$(basename "$FCHK_FILE" .fchk)
+    fi
 fi
 
-# 从xyz文件读取电荷
-CHARGE=$(sed -n '2p' "$XYZ_FILE" | awk '{print $1}')
-if ! [[ "$CHARGE" =~ ^-?[0-9]+$ ]]; then
-    echo "警告: 无法从xyz文件读取电荷，使用默认值 0"
-    CHARGE=0
+# 如果是xyz文件，读取电荷和几何结构
+if [[ -n $XYZ_FILE ]]; then
+    CHARGE=$(sed -n '2p' "$XYZ_FILE" | awk '{print $1}')
+    [[ ! "$CHARGE" =~ ^-?[0-9]+$ ]] && { echo "警告: 无法从xyz文件读取电荷，使用默认值 0"; CHARGE=0; }
+    GEOM=$(tail -n +3 "$XYZ_FILE")
 fi
-
-# 读取几何结构（跳过前两行）
-GEOM=$(tail -n +3 "$XYZ_FILE")
 
 # 处理泛函映射
-if [[ -n ${FUNCTIONAL_MAP[$FUNCTIONAL]} ]]; then
-    GAMESS_FUNCTIONAL=${FUNCTIONAL_MAP[$FUNCTIONAL]}
+GAMESS_FUNCTIONAL=${FUNCTIONAL_MAP[$FUNCTIONAL]:-$FUNCTIONAL}
+[[ -z $DFTTYP ]] && DFTTYP=$GAMESS_FUNCTIONAL
+
+# 显示计算参数（简化版）
+if [[ -n $XYZ_FILE ]]; then
+    echo "计算参数: 文件=${XYZ_FILE} | 前缀=${BASENAME} | 泛函=${FUNCTIONAL}→${DFTTYP} | 基组=${BASIS} | 电荷=${CHARGE} | 内存=${MEM}GB | 核心=${NPROCS}"
 else
-    GAMESS_FUNCTIONAL=$FUNCTIONAL
+    echo "计算参数: 文件=${FCHK_FILE} | 前缀=${BASENAME} | 泛函映射=${FUNCTIONAL}→${DFTTYP} | 内存=${MEM}GB | 核心=${NPROCS}"
 fi
+[[ -n $IROOT ]] && echo "TDDFT参数: IROOT=${IROOT}"
+[[ -n $MULT ]] && echo "TDDFT参数: MULT=${MULT}"
 
-# 如果用户没有手动指定DFTTYP，使用映射后的泛函
-if [[ -z $DFTTYP ]]; then
-    DFTTYP=$GAMESS_FUNCTIONAL
-fi
-
-# 打印当前使用的变量
-echo "========================================="
-echo "分子计算自动化脚本 - 参数列表"
-echo "========================================="
-printf "%-20s %-15s %-20s %-15s\n" "参数" "值" "参数" "值"
-echo "-----------------------------------------"
-printf "%-20s %-15s %-20s %-15s\n" "XYZ文件" "$XYZ_FILE" "内存(GB)" "$MEM"
-printf "%-20s %-15s %-20s %-15s\n" "CPU核心数" "$NPROCS" "泛函" "$FUNCTIONAL"
-printf "%-20s %-15s %-20s %-15s\n" "基组" "$BASIS" "电荷" "$CHARGE"
-printf "%-20s %-15s %-20s %-15s\n" "GAMESS泛函" "$DFTTYP" "内存字数" "$MWORDS"
-printf "%-20s %-15s %-20s %-15s\n" "运行类型" "$RUNTYP" "IROOT" "${IROOT:-未设置}"
-printf "%-20s %-15s %-20s %-15s\n" "MULT" "${MULT:-未设置}" "文件名前缀" "$BASENAME"
-echo "========================================="
-
-# 步骤1: 生成G16输入文件
-echo "步骤1: 生成G16输入文件..."
-G16_INPUT="${BASENAME}.gjf"
-
-cat > "$G16_INPUT" << EOF
+# 步骤1-3: G16计算（仅当输入是xyz文件时执行）
+if [[ $START_STEP -eq 1 ]]; then
+    # 步骤1: 生成G16输入文件
+    G16_INPUT="${BASENAME}.gjf"
+    cat > "$G16_INPUT" << EOF
 %chk=${BASENAME}.chk
 %mem=${MEM}GB
 %nprocshared=${NPROCS}
@@ -195,94 +124,99 @@ ${GEOM}
 
 EOF
 
-echo "已生成: $G16_INPUT"
+    # 步骤2: 运行G16计算
+    echo -n "运行G16计算..."
+    eval "$G16_ENV"
+    g16 "$G16_INPUT" > /dev/null 2>&1
+    [[ $? -ne 0 ]] && { echo " 失败"; exit 1; } || echo " 完成"
 
-# 加载G16环境并运行计算
-echo "步骤2: 运行G16计算..."
-eval "$G16_ENV"
-g16 "$G16_INPUT"
-
-if [[ $? -ne 0 ]]; then
-    echo "错误: G16计算失败"
-    exit 1
+    # 步骤3: 运行formchk
+    echo -n "运行formchk..."
+    formchk "${BASENAME}.chk" "${BASENAME}.fchk" > /dev/null 2>&1
+    [[ $? -ne 0 ]] && { echo " 失败"; exit 1; } || echo " 完成"
+    
+    FCHK_FILE="${BASENAME}.fchk"
 fi
 
-# 运行formchk
-echo "步骤3: 运行formchk..."
-formchk "${BASENAME}.chk" "${BASENAME}.fchk"
-
-if [[ $? -ne 0 ]]; then
-    echo "错误: formchk失败"
-    exit 1
-fi
-
-# 步骤4: 加载MOKIT环境并处理fchk文件
-echo "步骤4: 使用MOKIT处理fchk文件..."
+# 步骤4: 使用MOKIT处理fchk文件
+echo -n "MOKIT处理fchk文件..."
 eval "$MOKIT_ENV"
-fch2inp "${BASENAME}.fchk" -mrsf
 
-if [[ $? -ne 0 ]]; then
-    echo "错误: fch2inp失败"
-    exit 1
+# 如果basename与fchk文件名不同，需要先重命名fchk文件
+ORIGINAL_FCHK="$FCHK_FILE"
+if [[ "$(basename "$FCHK_FILE" .fchk)" != "$BASENAME" ]]; then
+    NEW_FCHK_FILE="${BASENAME}.fchk"
+    cp "$FCHK_FILE" "$NEW_FCHK_FILE"
+    FCHK_FILE="$NEW_FCHK_FILE"
+    echo " 重命名fchk文件: $(basename "$ORIGINAL_FCHK") → $(basename "$NEW_FCHK_FILE")"
 fi
 
-# 步骤5: 修改生成的inp文件
-echo "步骤5: 修改GAMESS输入文件..."
+fch2inp "$FCHK_FILE" -mrsf > /dev/null 2>&1
+[[ $? -ne 0 ]] && { echo " 失败"; exit 1; } || echo " 完成"
+
+# 步骤5: 修改GAMESS输入文件
 INP_FILE="${BASENAME}.inp"
-if [[ ! -f $INP_FILE ]]; then
-    echo "错误: 找不到生成的inp文件"
-    exit 1
-fi
+[[ ! -f $INP_FILE ]] && { echo "错误: 找不到生成的inp文件"; exit 1; }
 
-# 备份原文件
 cp "$INP_FILE" "${INP_FILE}.bak"
-
-# 替换DFTTYP
 sed -i "s/DFTTYP=[A-Z0-9-]*/DFTTYP=${DFTTYP}/g" "$INP_FILE"
-echo "已将GAMESS输入文件中的泛函修改为: $DFTTYP"
-
-# 替换RUNTYP
 sed -i "s/RUNTYP=[A-Z]*/RUNTYP=${RUNTYP}/g" "$INP_FILE"
-echo "已将RUNTYP修改为: $RUNTYP"
 
-# 处理TDDFT参数（IROOT和MULT）
+# 处理TDDFT参数
 if [[ -n $IROOT || -n $MULT ]]; then
-    # 构建要添加的TDDFT参数
     TDDFT_PARAMS=""
-    if [[ -n $IROOT ]]; then
-        TDDFT_PARAMS="${TDDFT_PARAMS} IROOT=${IROOT}"
-    fi
-    if [[ -n $MULT ]]; then
-        TDDFT_PARAMS="${TDDFT_PARAMS} MULT=${MULT}"
-    fi
-    
-    # 在$TDDFT行中添加参数
+    [[ -n $IROOT ]] && TDDFT_PARAMS="${TDDFT_PARAMS} IROOT=${IROOT}"
+    [[ -n $MULT ]] && TDDFT_PARAMS="${TDDFT_PARAMS} MULT=${MULT}"
     sed -i "/\$TDDFT/s/NSTATE=[0-9]*/&${TDDFT_PARAMS}/" "$INP_FILE"
-    
-    if [[ -n $IROOT ]]; then
-        echo "已在TDDFT部分添加IROOT=${IROOT}"
-    fi
-    if [[ -n $MULT ]]; then
-        echo "已在TDDFT部分添加MULT=${MULT}"
-    fi
 fi
 
-# 步骤6: 加载GMS环境并运行计算
-echo "步骤6: 运行GAMESS计算..."
+echo "GAMESS输入文件已修改: 泛函=${DFTTYP} | 运行类型=${RUNTYP}${TDDFT_PARAMS:+ | TDDFT参数=${TDDFT_PARAMS}}"
+
+# 步骤6: 运行GAMESS计算
+echo -n "运行GAMESS计算..."
 eval "$GMS_ENV"
 rungms "$INP_FILE" 01 "$NPROCS" > "${BASENAME}.gms"
-
 if [[ $? -ne 0 ]]; then
-    echo "错误: GAMESS计算失败"
+    echo " 失败"
     exit 1
+else
+    echo " 完成"
 fi
 
-echo "========================================="
-echo "计算完成！"
-echo "生成的文件："
-echo "  - G16输入: $G16_INPUT"
-echo "  - G16检查点: ${BASENAME}.chk"
-echo "  - G16格式化检查点: ${BASENAME}.fchk"
-echo "  - GAMESS输入: $INP_FILE"
-echo "  - GAMESS输出: ${BASENAME}.gms"
-echo "========================================"
+# 检查SCF是否收敛
+if tail -100 "${BASENAME}.gms" | grep -q "SCF DID NOT CONVERGE"; then
+    echo "检测到SCF未收敛，修改SCF参数后重新计算..."
+    
+    # 删除gms文件
+    rm "${BASENAME}.gms"
+    
+    # 修改inp文件的SCF部分
+    if grep -q "\$SCF.*DIRSCF=\.T\." "$INP_FILE"; then
+        # 如果已经有DIRSCF=.T.，添加DIIS和SOSCF参数
+        sed -i '/\$SCF.*DIRSCF=\.T\./s/\$END/ DIIS=.F. SOSCF=.T. $END/' "$INP_FILE"
+    else
+        # 如果没有找到DIRSCF=.T.，查找$SCF行并修改
+        sed -i '/\$SCF/s/\$END/ DIRSCF=.T. DIIS=.F. SOSCF=.T. $END/' "$INP_FILE"
+    fi
+    
+    echo "已修改SCF参数: DIRSCF=.T. DIIS=.F. SOSCF=.T."
+    
+    # 重新运行GAMESS计算
+    echo -n "重新运行GAMESS计算..."
+    rungms "$INP_FILE" 01 "$NPROCS" > "${BASENAME}.gms"
+    if [[ $? -ne 0 ]]; then
+        echo " 失败"
+        exit 1
+    else
+        echo " 完成"
+    fi
+    
+    # 再次检查是否收敛
+    if tail -100 "${BASENAME}.gms" | grep -q "SCF DID NOT CONVERGE"; then
+        echo "警告: SCF仍未收敛，请检查计算设置"
+    else
+        echo "SCF已收敛"
+    fi
+fi
+
+echo "计算完成！生成文件: ${G16_INPUT:-无}, ${BASENAME}.chk${G16_INPUT:+, ${BASENAME}.fchk}, ${INP_FILE}, ${BASENAME}.gms"

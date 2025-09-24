@@ -6,6 +6,8 @@ maxcyc=50
 tmpdir=temp
 keeptmp=true
 restart=false
+algorithm=bpupd
+stpmx=0.05
 end
 
 %InpTmplt1
@@ -17,7 +19,7 @@ end
 %InpTmplt2
 echo ">>>>> Start gamess calculation2"
 cp ../gamess.sh .
-bash gamess.sh [xyzfile] --iroot 2 --basename astep[nstep]_state2 >> mrsfout.tmp 2>&1
+bash gamess.sh [name]_state1.fchk --iroot 2 --basename [name]_state2 >> mrsfout.tmp 2>&1
 cp opt.trj ..
 end
 

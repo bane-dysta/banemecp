@@ -9,7 +9,7 @@ C
 C     Compile: 
 C       cp MECP.f MECP_temp.f
 C       sed -i 's/NUMATOM/$NATOM/g' MECP_temp.f
-C       gfortran -O3 -march=native -ffast-math -ffixed-line-length-none sbaneMECP.f -o MECP.x
+C       gfortran -O3 -march=native -ffast-math -ffixed-line-length-none baneMECP.f -o MECP.x
 C     
 
       INTEGER Natom, Nx
@@ -24,6 +24,9 @@ C
       DOUBLE PRECISION Gb_1(Nx), Gb_2(Nx)
       DOUBLE PRECISION X_1(Nx), X_2(Nx), X_3(Nx)
       DOUBLE PRECISION G_1(Nx), G_2(Nx)
+      DOUBLE PRECISION XBP_prev(Nx), YBP_prev(Nx)
+      DOUBLE PRECISION XBP_curr(Nx), YBP_curr(Nx)
+      INTEGER IALGO
       
 C     Convergence thresholds (now dynamic)
       DOUBLE PRECISION TDE, TDXMax, TDXRMS, TGMax, TGRMS
@@ -32,7 +35,8 @@ C     Trust radius parameter (now dynamic)
       DOUBLE PRECISION STPMX
       
       CHARACTER*256 inputname, filename, arg
-      LOGICAL file_exists, first_step
+      CHARACTER*16 algorithm
+      LOGICAL file_exists, first_step, has_bp_prev
       INTEGER nargs, iargc, natom_actual, iarg
       
 C     Set default convergence thresholds
@@ -44,6 +48,8 @@ C     Set default convergence thresholds
       
 C     Set default trust radius
       STPMX = 0.1d0
+      algorithm = 'harvey'
+      has_bp_prev = .false.
       
 C     Parse command line arguments
       nargs = iargc()
@@ -64,9 +70,10 @@ C     Parse command line arguments
           write(*,*) 'Optional optimization parameters:'
           write(*,*) '  --stpmx VALUE   Trust radius/max step (default: 0.1)'
           write(*,*) '                  Reduce to 0.02 for oscillating systems'
+          write(*,*) '  --algo NAME     Algorithm: harvey | bpupd (default: harvey)'
           write(*,*) ''
           write(*,*) 'Example:'
-          write(*,*) '  ./MECP.x mol1 --tgmax 1e-3 --stpmx 0.02'
+          write(*,*) '  ./MECP.x mol1 --algo bpupd --tgmax 1e-3 --stpmx 0.02'
           stop
       endif
       
@@ -124,6 +131,14 @@ C     Parse optional parameters
               call getarg(iarg + 1, arg)
               read(arg, *, err=105) STPMX
               iarg = iarg + 2
+          else if (arg .eq. '--algo') then
+              if (iarg .eq. nargs) then
+                  write(*,*) 'Error: --algo requires a value'
+                  stop
+              endif
+              call getarg(iarg + 1, arg)
+              algorithm = arg
+              iarg = iarg + 2
           else
               write(*,*) 'Warning: Unknown argument: ', trim(arg)
               iarg = iarg + 1
@@ -140,6 +155,7 @@ C     Print parameters being used
       write(*,'(A,E12.5)') 'RMS displacement (TDXRMS):', TDXRMS
       write(*,*) '=== Optimization Parameters ==='
       write(*,'(A,E12.5)') 'Trust radius (STPMX):    ', STPMX
+      write(*,'(A,A)') 'Algorithm:               ', trim(algorithm)
       if (STPMX .lt. 0.05d0) then
           write(*,*) 'Note: Using reduced trust radius for better stability'
       endif
@@ -162,15 +178,37 @@ C         First step - initialize
               X_1(i) = X_2(i)
               G_1(i) = 0.d0
           END DO
+          DO i = 1, Nx
+              XBP_prev(i) = 0.d0
+              YBP_prev(i) = 0.d0
+          END DO
+          has_bp_prev = .false.
       ELSE
 C         Read previous state
           CALL ReadState(Natom, Nx, natom_actual, Nstep,
-     &                   X_1, IH_1, Ea_1, Eb_1, Ga_1, Gb_1, G_1)
+     &                   X_1, IH_1, Ea_1, Eb_1, Ga_1, Gb_1, G_1,
+     &                   IALGO, XBP_prev, YBP_prev)
+          has_bp_prev = .false.
+          if (trim(algorithm) .eq. 'bpupd') then
+              if (IALGO .eq. 1) then
+                  has_bp_prev = .true.
+              endif
+          endif
       END IF
       
-C     Compute the Effective Gradient (ORIGINAL ALGORITHM)
-      CALL Effective_Gradient(Nx, Ea_2, Eb_2, Ga_2, Gb_2, 
-     &                        ParG, PerpG, G_2)
+C     Compute the Effective Gradient according to selected algorithm
+      if (trim(algorithm) .eq. 'bpupd') then
+          CALL BPUPD_Gradient(Nx, Ea_2, Eb_2, Ga_2, Gb_2,
+     &                        has_bp_prev, XBP_prev, YBP_prev,
+     &                        ParG, PerpG, G_2, XBP_curr, YBP_curr)
+      else
+          CALL Effective_Gradient(Nx, Ea_2, Eb_2, Ga_2, Gb_2, 
+     &                            ParG, PerpG, G_2)
+          DO i = 1, Nx
+              XBP_curr(i) = 0.d0
+              YBP_curr(i) = 0.d0
+          END DO
+      endif
      
 C     Perform BFGS update with configurable trust radius
       CALL UpdateX(Nx, Nstep, first_step, X_1, X_2, X_3, 
@@ -206,9 +244,12 @@ C         Write new geometry for next iteration
           CALL WriteXYZ('new.xyz', natom_actual, AtNum, X_3,
      &                  'MECP Step')
 C         Save current state
+          IALGO = 0
+          if (trim(algorithm) .eq. 'bpupd') IALGO = 1
           CALL WriteState(Natom, Nx, natom_actual, Nstep,
      &                    X_2, X_3, IH_2, Ea_2, Eb_2, 
-     &                    Ga_2, Gb_2, G_2)
+     &                    Ga_2, Gb_2, G_2, IALGO,
+     &                    XBP_curr, YBP_curr)
       END IF
 
       goto 999
@@ -348,9 +389,6 @@ C     Read geometry from xyz file
       read(10,*) Natom_actual
       IF (Natom_actual .gt. MaxNatom) THEN
           write(*,*) 'Error: Too many atoms in file'
-          write(*,*) 'File has', Natom_actual, 'atoms'
-          write(*,*) 'Compiled for max', MaxNatom, 'atoms'
-          write(*,*) 'Recompile with larger NUMATOM'
           stop
       END IF
       nx_actual = 3 * Natom_actual
@@ -433,13 +471,16 @@ C=====================================================================
 
 C=====================================================================
       SUBROUTINE ReadState(MaxNatom, MaxNx, Natom_actual, Nstep,
-     &                     X_1, IH, Ea, Eb, Ga, Gb, G)
+     &                     X_1, IH, Ea, Eb, Ga, Gb, G,
+     &                     IALGO, XBP_prev, YBP_prev)
       implicit none
       
       INTEGER MaxNatom, MaxNx, Natom_actual, Nstep, i, j
       INTEGER nx_actual
       DOUBLE PRECISION X_1(MaxNx), IH(MaxNx,MaxNx)
       DOUBLE PRECISION Ea, Eb, Ga(MaxNx), Gb(MaxNx), G(MaxNx)
+      INTEGER IALGO
+      DOUBLE PRECISION XBP_prev(MaxNx), YBP_prev(MaxNx)
       
       nx_actual = 3 * Natom_actual
       
@@ -472,6 +513,25 @@ C     Read inverse Hessian
               READ(30,*) IH(i,j)
           END DO
       END DO
+
+C     Try to read optional BPUPD state
+      IALGO = 0
+  910 CONTINUE
+      READ(30,*,END=920,ERR=920) IALGO
+      DO i = 1, nx_actual
+          READ(30,*,END=920,ERR=920) XBP_prev(i)
+      END DO
+      DO i = 1, nx_actual
+          READ(30,*,END=920,ERR=920) YBP_prev(i)
+      END DO
+      GOTO 930
+  920 CONTINUE
+      IALGO = 0
+      DO i = 1, nx_actual
+          XBP_prev(i) = 0.d0
+          YBP_prev(i) = 0.d0
+      END DO
+  930 CONTINUE
       
       CLOSE(30)
       RETURN
@@ -480,13 +540,16 @@ C     Read inverse Hessian
 
 C=====================================================================
       SUBROUTINE WriteState(MaxNatom, MaxNx, Natom_actual, Nstep,
-     &                      X_2, X_3, IH, Ea, Eb, Ga, Gb, G)
+     &                      X_2, X_3, IH, Ea, Eb, Ga, Gb, G,
+     &                      IALGO, XBP_prev, YBP_prev)
       implicit none
       
       INTEGER MaxNatom, MaxNx, Natom_actual, Nstep, i, j
       INTEGER nx_actual
       DOUBLE PRECISION X_2(MaxNx), X_3(MaxNx), IH(MaxNx,MaxNx)
       DOUBLE PRECISION Ea, Eb, Ga(MaxNx), Gb(MaxNx), G(MaxNx)
+      INTEGER IALGO
+      DOUBLE PRECISION XBP_prev(MaxNx), YBP_prev(MaxNx)
       
       nx_actual = 3 * Natom_actual
       
@@ -518,6 +581,15 @@ C     Write inverse Hessian
           DO j = 1, nx_actual
               WRITE(31,'(F20.12)') IH(i,j)
           END DO
+      END DO
+
+C     Write optional BPUPD state
+      WRITE(31,*) IALGO
+      DO i = 1, nx_actual
+          WRITE(31,'(F20.12)') XBP_prev(i)
+      END DO
+      DO i = 1, nx_actual
+          WRITE(31,'(F20.12)') YBP_prev(i)
       END DO
       
       CLOSE(31)
@@ -653,6 +725,118 @@ C  Using facPP ~ 140 /Hartree means that along this coordinate, too, the Hessian
        
        END
 
+
+C=====================================================================
+C                          BPUPD_Gradient
+C=====================================================================
+      SUBROUTINE BPUPD_Gradient(N,Ea,Eb,Ga,Gb,HasPrev,
+     &                         Xprev,Yprev,ParG,PerpG,G,Xout,Yout)
+      implicit none
+      INTEGER N, i, j
+      DOUBLE PRECISION Ea, Eb, Ga(N), Gb(N), ParG(N), PerpG(N), G(N)
+      DOUBLE PRECISION Xprev(N), Yprev(N), Xout(N), Yout(N)
+      LOGICAL HasPrev
+      DOUBLE PRECISION gd_norm, dotxx, dotyx, ax, ay, denom
+      DOUBLE PRECISION gm_dot_x, gm_dot_y, de
+      DOUBLE PRECISION gd_i, gm_i, x_i, y_i, tmp
+      DOUBLE PRECISION gm(N), proj_gm(N)
+      DOUBLE PRECISION eps
+      PARAMETER (eps=1.0d-12)
+      
+C     Compute difference and mean gradients
+      gd_norm = 0.d0
+      DO i = 1, N
+          PerpG(i) = Gb(i) - Ga(i)  ! g2 - g1
+          gm(i) = 0.5d0 * (Ga(i) + Gb(i))  ! mean gradient
+          gd_norm = gd_norm + PerpG(i)*PerpG(i)
+      END DO
+      gd_norm = SQRT(gd_norm)
+      
+      IF (gd_norm .lt. eps) THEN
+C         Fallback to Harvey method if degenerate
+          CALL Effective_Gradient(N, Ea, Eb, Ga, Gb, ParG, PerpG, G)
+          DO i = 1, N
+              Xout(i) = 0.d0
+              Yout(i) = 0.d0
+          END DO
+          RETURN
+      END IF
+      
+C     x = normalized gradient difference
+      DO i = 1, N
+          Xout(i) = PerpG(i) / gd_norm
+      END DO
+      
+C     y vector update
+      IF (.not. HasPrev) THEN
+C         First step: y = (gm - (x·gm)x) / |gm - (x·gm)x|
+          gm_dot_x = 0.d0
+          DO i = 1, N
+              gm_dot_x = gm_dot_x + Xout(i) * gm(i)
+          END DO
+          
+          tmp = 0.d0
+          DO i = 1, N
+              Yout(i) = gm(i) - gm_dot_x * Xout(i)
+              tmp = tmp + Yout(i)*Yout(i)
+          END DO
+          
+          IF (tmp .gt. eps) THEN
+              tmp = 1.d0 / SQRT(tmp)
+              DO i = 1, N
+                  Yout(i) = Yout(i) * tmp
+              END DO
+          ELSE
+              DO i = 1, N
+                  Yout(i) = 0.d0
+              END DO
+          END IF
+      ELSE
+C         后续步骤的y更新：基于前一步的x和y向量
+          dotyx = 0.d0
+          dotxx = 0.d0
+          DO i = 1, N
+              dotyx = dotyx + Yprev(i) * Xout(i)
+              dotxx = dotxx + Xprev(i) * Xout(i)
+          END DO
+          
+          denom = dotyx*dotyx + dotxx*dotxx
+          IF (denom .gt. eps) THEN
+              denom = SQRT(denom)
+              DO i = 1, N
+                  Yout(i) = (dotyx * Xprev(i) - dotxx * Yprev(i)) / denom
+              END DO
+          ELSE
+              DO i = 1, N
+                  Yout(i) = 0.d0
+              END DO
+          END IF
+      END IF
+      
+C     计算投影后的平均梯度: proj_gm = (I - xx^T - yy^T) * gm
+C     这等价于: proj_gm = gm - (x·gm)x - (y·gm)y
+      gm_dot_x = 0.d0
+      gm_dot_y = 0.d0
+      DO i = 1, N
+          gm_dot_x = gm_dot_x + Xout(i) * gm(i)
+          gm_dot_y = gm_dot_y + Yout(i) * gm(i)
+      END DO
+      
+      DO i = 1, N
+          proj_gm(i) = gm(i) - gm_dot_x * Xout(i) - gm_dot_y * Yout(i)
+      END DO
+      
+C     构造有效梯度: G = 2*(E2-E1)*x + proj_gm
+      de = Eb - Ea
+      DO i = 1, N
+C         平行梯度分量（用于输出和分析）
+          ParG(i) = proj_gm(i)
+C         有效梯度
+          G(i) = 2.d0 * de * Xout(i) + proj_gm(i)
+      END DO
+      
+      RETURN
+      END
 
 C=====================================================================
 C                          Initialize

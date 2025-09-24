@@ -31,6 +31,8 @@ struct ControlParams {
     double tdxrms = 2.5e-3;   // RMS位移阈值
     double stpmx = 0.1;       // 置信半径/最大步长
     
+    std::string algorithm = "harvey";  // 默认使用Harvey方法
+
     void print_debug_info() const {
         if (debug) {
             std::cout << "\n=== Control Parameters (Debug) ===\n";
@@ -39,6 +41,7 @@ struct ControlParams {
             std::cout << "keeptmp = " << (keeptmp ? "true" : "false") << std::endl;
             std::cout << "debug   = " << (debug ? "true" : "false") << std::endl;
             std::cout << "restart = " << (restart ? "true" : "false") << std::endl;
+            std::cout << "algorithm = " << algorithm << std::endl;
             std::cout << "=== Convergence Criteria ===\n";
             std::cout << "tde     = " << tde << std::endl;
             std::cout << "tgmax   = " << tgmax << std::endl;
@@ -200,7 +203,16 @@ private:
             {"tgrms", [this](const std::string& v) { control.tgrms = std::stod(v); }},
             {"tdxmax", [this](const std::string& v) { control.tdxmax = std::stod(v); }},
             {"tdxrms", [this](const std::string& v) { control.tdxrms = std::stod(v); }},
-            {"stpmx", [this](const std::string& v) { control.stpmx = std::stod(v); }}
+            {"stpmx", [this](const std::string& v) { control.stpmx = std::stod(v); }},
+            {"algorithm", [this](const std::string& v) { 
+                if (v == "harvey" || v == "bpupd") {
+                    control.algorithm = v; 
+                } else {
+                    std::cerr << "Warning: Unknown algorithm '" << v 
+                              << "', using default 'harvey'" << std::endl;
+                    control.algorithm = "harvey";
+                }
+            }}
         };
 
         while (std::getline(file, line)) {
@@ -463,6 +475,29 @@ private:
         return !m_tmpdir.empty() && m_tmpdir != ".";
     }
 
+    fs::path find_banemecp_file() {
+        fs::path search_paths[] = {
+            m_original_dir / "baneMECP.f",
+            m_exec_path / "baneMECP.f", 
+            fs::path(getenv("HOME")) / ".bane" / "mecp" / "baneMECP.f"
+        };
+        
+        for (const auto& path : search_paths) {
+            if (fs::exists(path)) {
+                if (m_debug) {
+                    std::cout << "Debug: Using baneMECP.f from: " << path << std::endl;
+                }
+                return path;
+            }
+        }
+        
+        std::cerr << "Error: baneMECP.f not found in any of the search paths:" << std::endl;
+        std::cerr << "  - " << search_paths[0] << std::endl;
+        std::cerr << "  - " << search_paths[1] << std::endl;
+        std::cerr << "  - " << search_paths[2] << std::endl;
+        return {};
+    }
+
     bool initialize() {
         m_base_name = m_input.geom_file.stem().string();
         
@@ -498,7 +533,7 @@ private:
 
                 // Copy necessary files to tmp directory
                 fs::path geom_src = m_original_dir / m_input.geom_file;
-                fs::path banemecp_src = m_original_dir / "baneMECP.f";
+                fs::path banemecp_src = find_banemecp_file();
 
                 if (fs::exists(geom_src)) {
                     fs::copy_file(geom_src, m_input.geom_file.filename(), fs::copy_options::overwrite_existing);
@@ -510,13 +545,12 @@ private:
                     return false;
                 }
 
-                if (fs::exists(banemecp_src)) {
+                if (!banemecp_src.empty()) {
                     fs::copy_file(banemecp_src, "baneMECP.f", fs::copy_options::overwrite_existing);
                     if (m_debug) {
                         std::cout << "Debug: Copied baneMECP.f to tmp directory" << std::endl;
                     }
                 } else {
-                    std::cerr << "Error: baneMECP.f not found: " << banemecp_src << std::endl;
                     return false;
                 }
 
@@ -525,6 +559,25 @@ private:
                           << "': " << e.what() << ". Using current directory." << std::endl;
                 m_tmpdir = ".";
                 fs::current_path(m_original_dir);
+            }
+        } else {
+            // Check if baneMECP.f exists in current directory or search paths
+            fs::path banemecp_src = find_banemecp_file();
+            if (banemecp_src.empty()) {
+                return false;
+            }
+
+            // If baneMECP.f is not in current directory, copy it here
+            if (banemecp_src != fs::current_path() / "baneMECP.f") {
+                try {
+                    fs::copy_file(banemecp_src, "baneMECP.f", fs::copy_options::overwrite_existing);
+                    if (m_debug) {
+                        std::cout << "Debug: Copied baneMECP.f to current directory" << std::endl;
+                    }
+                } catch (const fs::filesystem_error& e) {
+                    std::cerr << "Error: Failed to copy baneMECP.f: " << e.what() << std::endl;
+                    return false;
+                }
             }
         }
         
@@ -689,6 +742,7 @@ private:
         // 构建MECP.x命令
         std::stringstream cmd_ss;
         cmd_ss << "./MECP.x " << step_name;
+        cmd_ss << " --algo " << m_input.control.algorithm;
         cmd_ss << " --tde " << std::scientific << m_input.control.tde;
         cmd_ss << " --tgmax " << std::scientific << m_input.control.tgmax; 
         cmd_ss << " --tgrms " << std::scientific << m_input.control.tgrms;
@@ -1171,6 +1225,7 @@ int main(int argc, char* argv[]) {
         std::cerr << "    keeptmp=false" << std::endl;
         std::cerr << "    debug=false" << std::endl;
         std::cerr << "    restart=true" << std::endl;
+        std::cerr << "    algorithm=harvey" << std::endl;
         std::cerr << "  end" << std::endl;
         std::cerr << "  %InpTmplt1 ... end" << std::endl;
         std::cerr << "  %InpTmplt2 ... end (optional)" << std::endl;
