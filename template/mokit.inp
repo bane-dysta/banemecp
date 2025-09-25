@@ -1,0 +1,37 @@
+%Prog g16
+%Geom init.xyz
+%Control
+maxcyc=100
+tmpdir=.
+keeptmp=true
+restart=false
+end
+
+%InpTmplt1
+%chk=state1.chk
+# 
+
+mokit{ist=2,force}
+
+0 1
+[geom]
+
+
+end
+
+%InpTmplt2
+%chk=state2.chk
+# 
+
+mokit{ist=2,readno='[name]_state1_uhf_CASSCF_NO.fch',force}
+
+0 1
+[geom]
+
+
+end
+
+%GrpTmplt
+state1=scf
+state2=tddft
+end

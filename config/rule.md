@@ -64,43 +64,43 @@
   - 正则表达式中的第一个捕获组`()`将被提取为能量值
   - 支持科学计数法和负数
 
-- `E.LoacteCount`: 能量定位次数（可选，默认为1）
+- `E.LocateCount`: 能量定位次数（可选，默认为1）
   ```ini
-  E.LoacteCount=2  # 提取第2次出现的匹配
+  E.LocateCount=2  # 提取第2次出现的匹配
   ```
 
 ### 梯度提取参数
 
-- `GARD.Loacte`: 梯度块的定位字符串
+- `GRAD.Locate`: 梯度块的定位字符串
   ```ini
-  GARD.Loacte=Forces (Hartrees/Bohr)
+  GRAD.Locate=Forces (Hartrees/Bohr)
   ```
 
-- `GARD.LoacteCount`: 梯度块定位次数（可选，默认为1）
+- `GRAD.LocateCount`: 梯度块定位次数（可选，默认为1）
   ```ini
-  GARD.LoacteCount=2  # 定位到第2次出现的梯度块
+  GRAD.LocateCount=2  # 定位到第2次出现的梯度块
   ```
 
-- `GARD.NLineSkip`: 从定位字符串开始跳过的行数
+- `GRAD.NLineSkip`: 从定位字符串开始跳过的行数
   ```ini
-  GARD.NLineSkip=2  # 跳过2行后开始读取梯度数据
+  GRAD.NLineSkip=2  # 跳过2行后开始读取梯度数据
   ```
 
-- `GARD.TargetColumns`: 梯度数据的目标列（X,Y,Z坐标）
+- `GRAD.TargetColumns`: 梯度数据的目标列（X,Y,Z坐标）
   ```ini
-  GARD.TargetColumns=3,4,5  # 读取第3,4,5列作为X,Y,Z梯度
+  GRAD.TargetColumns=3,4,5  # 读取第3,4,5列作为X,Y,Z梯度
   ```
 
-- `GARD.EndBy`: 梯度块的结束标记（可选）
+- `GRAD.EndBy`: 梯度块的结束标记（可选）
   ```ini
-  GARD.EndBy=----  # 遇到"----"时停止读取
+  GRAD.EndBy=----  # 遇到"----"时停止读取
   # 留空表示遇到空行时停止
-  GARD.EndBy=
+  GRAD.EndBy=
   ```
 
-- `GARD.unit`: 梯度单位（可选）
+- `GRAD.unit`: 梯度单位（可选）
   ```ini
-  GARD.unit=hartree_per_bohr  # 目前仅支持hartree_per_bohr
+  GRAD.unit=hartree_per_bohr  # 目前仅支持hartree_per_bohr
   ```
 
 - `GRAD.Type`: 梯度类型（可选，默认为force）
@@ -122,17 +122,17 @@ RUN_CMD='g16 ${ACTUAL_INP} > ${ACTUAL_OUT}'
 
 [scf]
 E=SCF Done:\s+E\([^)]*\)\s*=\s*([-\d\.]+)
-GARD.Loacte=Forces (Hartrees/Bohr)
-GARD.NLineSkip=2
-GARD.TargetColumns=3,4,5
-GARD.EndBy=----
+GRAD.Locate=Forces (Hartrees/Bohr)
+GRAD.NLineSkip=2
+GRAD.TargetColumns=3,4,5
+GRAD.EndBy=----
 
 [td]
 E=Total Energy,\s*E\([^)]*\)\s*=\s*([-\d\.]+)
-GARD.Loacte=Forces (Hartrees/Bohr)
-GARD.NLineSkip=2
-GARD.TargetColumns=3,4,5
-GARD.EndBy=----
+GRAD.Locate=Forces (Hartrees/Bohr)
+GRAD.NLineSkip=2
+GRAD.TargetColumns=3,4,5
+GRAD.EndBy=----
 ```
 
 ### GAMESS配置（external模式）
@@ -143,20 +143,20 @@ OUTPUT_SUFFIX=gms
 
 [mrsf1]
 E=1\s{2}A\s+(-?\d+\.?\d+)
-GARD.Loacte=GRADIENT OF THE ENERGY
-GARD.LoacteCount=2
-GARD.NLineSkip=3
-GARD.TargetColumns=3,4,5
-GARD.EndBy=
+GRAD.Locate=GRADIENT OF THE ENERGY
+GRAD.LocateCount=2
+GRAD.NLineSkip=3
+GRAD.TargetColumns=3,4,5
+GRAD.EndBy=
 GRAD.Type=grad
 
 [mrsf2]
 E=2\s{2}A\s+(-?\d+\.?\d+)
-GARD.Loacte=GRADIENT OF THE ENERGY
-GARD.LoacteCount=2
-GARD.NLineSkip=3
-GARD.TargetColumns=3,4,5
-GARD.EndBy=
+GRAD.Locate=GRADIENT OF THE ENERGY
+GRAD.LocateCount=2
+GRAD.NLineSkip=3
+GRAD.TargetColumns=3,4,5
+GRAD.EndBy=
 GRAD.Type=grad
 ```
 

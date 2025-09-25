@@ -889,18 +889,18 @@ auto extract_single_state = [&](int state_num) {
             std::string content = read_file(output_file);
             if (content.empty()) return false;
             
-            // Extract energy with E.LoacteCount support
+            // Extract energy with E.LocateCount support
             std::smatch e_match;
             std::regex e_regex(rules.at("E"));
             
-            // Get E.LoacteCount parameter, default to 1 (first occurrence)
+            // Get E.LocateCount parameter, default to 1 (first occurrence)
             int e_locate_count = 1;
-            if (rules.count("E.LoacteCount") > 0) {
+            if (rules.count("E.LocateCount") > 0) {
                 try {
-                    e_locate_count = std::stoi(rules.at("E.LoacteCount"));
+                    e_locate_count = std::stoi(rules.at("E.LocateCount"));
                 } catch (const std::exception& e) {
                     if (m_debug) {
-                        std::cerr << "Debug: Invalid E.LoacteCount, using default value 1" << std::endl;
+                        std::cerr << "Debug: Invalid E.LocateCount, using default value 1" << std::endl;
                     }
                     e_locate_count = 1;
                 }
@@ -934,50 +934,50 @@ auto extract_single_state = [&](int state_num) {
                           << "): " << energy << std::endl;
             }
             
-            std::string gard_locate = rules.at("GARD.Loacte");
+            std::string grad_locate = rules.at("GRAD.Locate");
             
-            // Get GARD.LoacteCount parameter, default to 1 (first occurrence)
+            // Get GRAD.LocateCount parameter, default to 1 (first occurrence)
             int locate_count = 1;
-            if (rules.count("GARD.LoacteCount") > 0) {
+            if (rules.count("GRAD.LocateCount") > 0) {
                 try {
-                    locate_count = std::stoi(rules.at("GARD.LoacteCount"));
+                    locate_count = std::stoi(rules.at("GRAD.LocateCount"));
                 } catch (const std::exception& e) {
                     if (m_debug) {
-                        std::cerr << "Debug: Invalid GARD.LoacteCount, using default value 1" << std::endl;
+                        std::cerr << "Debug: Invalid GRAD.LocateCount, using default value 1" << std::endl;
                     }
                     locate_count = 1;
                 }
             }
             
-            // Find the Nth occurrence of gard_locate
-            size_t gard_pos = std::string::npos;
+            // Find the Nth occurrence of grad_locate
+            size_t grad_pos = std::string::npos;
             size_t search_pos = 0;
             for (int i = 0; i < locate_count; ++i) {
-                gard_pos = content.find(gard_locate, search_pos);
-                if (gard_pos == std::string::npos) {
+                grad_pos = content.find(grad_locate, search_pos);
+                if (grad_pos == std::string::npos) {
                     break;
                 }
-                search_pos = gard_pos + 1; // Move past current match for next search
+                search_pos = grad_pos + 1; // Move past current match for next search
             }
             
-            if (gard_pos == std::string::npos) {
+            if (grad_pos == std::string::npos) {
                 std::cerr << "Error: Could not locate gradient block in " << output_file << std::endl;
                 if (m_debug) {
-                    std::cerr << "Debug: Looking for gradient marker (occurrence #" << locate_count << "): '" << gard_locate << "'" << std::endl;
+                    std::cerr << "Debug: Looking for gradient marker (occurrence #" << locate_count << "): '" << grad_locate << "'" << std::endl;
                 }
                 return false;
             }
             if (m_debug) {
-                std::cout << "Debug: Found gradient block marker at position " << gard_pos << std::endl;
-                std::cout << "Debug: Gradient marker: '" << gard_locate << "'" << std::endl;
+                std::cout << "Debug: Found gradient block marker at position " << grad_pos << std::endl;
+                std::cout << "Debug: Gradient marker: '" << grad_locate << "'" << std::endl;
             }
-            std::stringstream content_stream(content.substr(gard_pos));
+            std::stringstream content_stream(content.substr(grad_pos));
             std::string line;
             std::getline(content_stream, line);
             if (m_debug) {
                 std::cout << "Debug: First line after marker: '" << line << "'" << std::endl;
             }
-            int n_skip = std::stoi(rules.at("GARD.NLineSkip"));
+            int n_skip = std::stoi(rules.at("GRAD.NLineSkip"));
             if (m_debug) {
                 std::cout << "Debug: Skipping " << n_skip << " lines" << std::endl;
             }
@@ -988,10 +988,10 @@ auto extract_single_state = [&](int state_num) {
                 }
             }
             std::vector<int> cols;
-            std::stringstream ss(rules.at("GARD.TargetColumns"));
+            std::stringstream ss(rules.at("GRAD.TargetColumns"));
             std::string col_str;
             while(std::getline(ss, col_str, ',')) cols.push_back(std::stoi(col_str));
-            std::string end_by = rules.at("GARD.EndBy");
+            std::string end_by = rules.at("GRAD.EndBy");
             
             // Get GRAD.Type parameter to determine if we need to negate gradients
             // Default is "force" (no negation) for backward compatibility
@@ -1055,7 +1055,7 @@ auto extract_single_state = [&](int state_num) {
             return write_file(step_name + ".grad" + std::to_string(state_num), grad_file_content.str());
         };
         if (!extract_single_state(1)) return false;
-        // Always extract second state results, regardless of whether InpTmplt2 was provided
+        // Always extract second state results, regradless of whether InpTmplt2 was provided
         if (!extract_single_state(2)) return false;
         return true;
     }
