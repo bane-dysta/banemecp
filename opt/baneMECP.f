@@ -16,6 +16,9 @@ C
       parameter (Natom=3)  ! Will be replaced by sed
       parameter (Nx=3*Natom)
 
+      INTEGER MAXDIIS
+      parameter (MAXDIIS=8)
+
       INTEGER Nstep, Conv, AtNum(Natom), i
       DOUBLE PRECISION Ea_1, Ea_2, Eb_1, Eb_2
       DOUBLE PRECISION IH_1(Nx,Nx), IH_2(Nx,Nx)
@@ -33,12 +36,22 @@ C     Convergence thresholds (now dynamic)
       
 C     Trust radius parameter (now dynamic)
       DOUBLE PRECISION STPMX
+
+C     Lagrangian-constraint / penalty-function parameters (XMECP-style)
+C     Default values follow XMECP inp_proc.py (pf_alpha=0.02, pf_sigma=3.50)
+      DOUBLE PRECISION PF_ALPHA, PF_SIGMA
+
+C     PF-specific convergence criteria (XMECP-style)
+C     pf_thresh=[1e-6, 5e-3] in XMECP.
+C       PF_TSTEP: objective function change threshold
+C       PF_TGRAD: penalty-function gradient threshold
+      DOUBLE PRECISION PF_TSTEP, PF_TGRAD
       
       CHARACTER*256 inputname, filename, arg
-      CHARACTER*16 algorithm
+      CHARACTER*16 algorithm, opt_method, hupd_method
       LOGICAL file_exists, first_step, has_bp_prev
-      INTEGER nargs, iargc, natom_actual, iarg
-      
+      INTEGER nargs, iargc, natom_actual, iarg, stepnum, NDIIS
+      DOUBLE PRECISION EOBJ
 C     Set default convergence thresholds
       TDE = 5.d-5
       TDXMax = 4.d-3
@@ -49,7 +62,18 @@ C     Set default convergence thresholds
 C     Set default trust radius
       STPMX = 0.1d0
       algorithm = 'harvey'
+      opt_method = 'bfgs'
+      hupd_method = 'bfgs'
+      NDIIS = 4
       has_bp_prev = .false.
+
+C     Set default Lagrangian/penalty parameters
+      PF_ALPHA = 2.0d-2
+      PF_SIGMA = 3.5d0
+
+C     Set default PF-specific convergence thresholds (XMECP-style)
+      PF_TSTEP = 1.0d-6
+      PF_TGRAD = 5.0d-3
       
 C     Parse command line arguments
       nargs = iargc()
@@ -70,10 +94,20 @@ C     Parse command line arguments
           write(*,*) 'Optional optimization parameters:'
           write(*,*) '  --stpmx VALUE   Trust radius/max step (default: 0.1)'
           write(*,*) '                  Reduce to 0.02 for oscillating systems'
-          write(*,*) '  --algo NAME     Algorithm: harvey | bpupd (default: harvey)'
+          write(*,*) '  --algo NAME     Algorithm: harvey | bpupd | lagrange (pf)'
+          write(*,*) '  --opt NAME      Opt method: bfgs | gdiis | gediis (default: bfgs)'
+          write(*,*) '  --hupd NAME     Hessian update: bfgs | psb | sr1 | bofill (default: bfgs)'
+          write(*,*) '  --ndiis N       DIIS history size (default: 4, max: 8)'
+          write(*,*) ''
+          write(*,*) 'Optional Lagrangian constraint parameters (for lagrange/pf):'
+          write(*,*) '  --pf_alpha VALUE  Alpha parameter (default: 0.02)'
+          write(*,*) '  --pf_sigma VALUE  Sigma parameter (default: 3.5)'
+          write(*,*) '  --pf_tstep VALUE  PF step threshold (default: 1e-6)'
+          write(*,*) '  --pf_tgrad VALUE  PF gradient threshold (default: 5e-3)'
           write(*,*) ''
           write(*,*) 'Example:'
           write(*,*) '  ./MECP.x mol1 --algo bpupd --tgmax 1e-3 --stpmx 0.02'
+          write(*,*) '  ./MECP.x mol1 --algo lagrange --pf_alpha 0.02 --pf_sigma 3.5 --pf_tstep 1e-6 --pf_tgrad 5e-3'
           stop
       endif
       
@@ -131,6 +165,38 @@ C     Parse optional parameters
               call getarg(iarg + 1, arg)
               read(arg, *, err=105) STPMX
               iarg = iarg + 2
+          else if (arg .eq. '--pf_alpha') then
+              if (iarg .eq. nargs) then
+                  write(*,*) 'Error: --pf_alpha requires a value'
+                  stop
+              endif
+              call getarg(iarg + 1, arg)
+              read(arg, *, err=106) PF_ALPHA
+              iarg = iarg + 2
+          else if (arg .eq. '--pf_sigma') then
+              if (iarg .eq. nargs) then
+                  write(*,*) 'Error: --pf_sigma requires a value'
+                  stop
+              endif
+              call getarg(iarg + 1, arg)
+              read(arg, *, err=107) PF_SIGMA
+              iarg = iarg + 2
+          else if (arg .eq. '--pf_tstep') then
+              if (iarg .eq. nargs) then
+                  write(*,*) 'Error: --pf_tstep requires a value'
+                  stop
+              endif
+              call getarg(iarg + 1, arg)
+              read(arg, *, err=109) PF_TSTEP
+              iarg = iarg + 2
+          else if (arg .eq. '--pf_tgrad') then
+              if (iarg .eq. nargs) then
+                  write(*,*) 'Error: --pf_tgrad requires a value'
+                  stop
+              endif
+              call getarg(iarg + 1, arg)
+              read(arg, *, err=110) PF_TGRAD
+              iarg = iarg + 2
           else if (arg .eq. '--algo') then
               if (iarg .eq. nargs) then
                   write(*,*) 'Error: --algo requires a value'
@@ -139,12 +205,46 @@ C     Parse optional parameters
               call getarg(iarg + 1, arg)
               algorithm = arg
               iarg = iarg + 2
-          else
+          else if (arg .eq. '--opt' .or. arg .eq. '--opt_method') then
+              if (iarg .eq. nargs) then
+                  write(*,*) 'Error: --opt requires a value'
+                  stop
+              endif
+              call getarg(iarg + 1, arg)
+              opt_method = arg
+              iarg = iarg + 2
+                    else if (arg .eq. '--hupd' .or.
+     &             arg .eq. '--hess' .or.
+     &             arg .eq. '--hessupd') then
+              if (iarg .eq. nargs) then
+                  write(*,*) 'Error: --hupd requires a value'
+                  stop
+              endif
+              call getarg(iarg + 1, arg)
+              hupd_method = arg
+              iarg = iarg + 2
+          else if (arg .eq. '--ndiis') then
+
+              if (iarg .eq. nargs) then
+                  write(*,*) 'Error: --ndiis requires a value'
+                  stop
+              endif
+              call getarg(iarg + 1, arg)
+              read(arg, *, err=108) NDIIS
+              iarg = iarg + 2
+                    else
               write(*,*) 'Warning: Unknown argument: ', trim(arg)
               iarg = iarg + 1
           endif
       end do
-      
+
+C     Clamp DIIS subspace size
+      if (NDIIS .lt. 1) NDIIS = 1
+      if (NDIIS .gt. MAXDIIS) then
+          write(*,*) 'Warning: NDIIS too large, using MAXDIIS =', MAXDIIS
+          NDIIS = MAXDIIS
+      endif
+
 C     Print parameters being used
       write(*,*) '=========================================='
       write(*,*) '=== Convergence Thresholds ==='
@@ -156,15 +256,65 @@ C     Print parameters being used
       write(*,*) '=== Optimization Parameters ==='
       write(*,'(A,E12.5)') 'Trust radius (STPMX):    ', STPMX
       write(*,'(A,A)') 'Algorithm:               ', trim(algorithm)
+      write(*,'(A,A)') 'Opt method:              ', trim(opt_method)
+      write(*,'(A,A)') 'Hessian update:          ', trim(hupd_method)
+      write(*,'(A,I8)') 'DIIS history (NDIIS):    ', NDIIS
+      if (trim(algorithm) .eq. 'lagrange' .or.
+     &    trim(algorithm) .eq. 'pf') then
+          write(*,*) '=== Lagrangian Constraint Parameters ==='
+          write(*,'(A,E12.5)') 'pf_alpha (alpha):        ', PF_ALPHA
+          write(*,'(A,E12.5)') 'pf_sigma (sigma):        ', PF_SIGMA
+          write(*,*) '=== PF Convergence (XMECP-style) ==='
+          write(*,'(A,E12.5)') 'pf_tstep:                ', PF_TSTEP
+          write(*,'(A,E12.5)') 'pf_tgrad:                ', PF_TGRAD
+      endif
       if (STPMX .lt. 0.05d0) then
           write(*,*) 'Note: Using reduced trust radius for better stability'
       endif
       write(*,*) '=========================================='
       write(*,*) ''
-      
+
+C     Validate algorithm keyword
+      IF (trim(algorithm) .ne. 'harvey' .and.
+     &    trim(algorithm) .ne. 'bpupd' .and.
+     &    trim(algorithm) .ne. 'lagrange' .and.
+     &    trim(algorithm) .ne. 'pf') THEN
+          write(*,*) 'Error: Unknown algorithm: ', trim(algorithm)
+          write(*,*) 'Supported algorithms: harvey, bpupd, lagrange (pf)'
+          STOP
+      ENDIF
+
+C     Validate optimization method keyword
+      IF (trim(opt_method) .ne. 'bfgs' .and.
+     &    trim(opt_method) .ne. 'gdiis' .and.
+     &    trim(opt_method) .ne. 'gediis') THEN
+          write(*,*) 'Error: Unknown opt_method: ', trim(opt_method)
+          write(*,*) 'Supported opt methods: bfgs, gdiis, gediis'
+          STOP
+      ENDIF
+C     Validate Hessian update method keyword
+      IF (trim(hupd_method) .ne. 'bfgs' .and.
+     &    trim(hupd_method) .ne. 'psb' .and.
+     &    trim(hupd_method) .ne. 'sr1' .and.
+     &    trim(hupd_method) .ne. 'bofill') THEN
+          write(*,*) 'Error: Unknown hessian update: ', trim(hupd_method)
+          write(*,*) 'Supported hessian updates: bfgs, psb, sr1, bofill'
+          STOP
+      ENDIF
+
+
 C     Check if this is first step (no MECP.state file exists)
       inquire(file='MECP.state', exist=file_exists)
       first_step = .not. file_exists
+
+C     If starting fresh, remove old DIIS history file
+      if (first_step) then
+          inquire(file='MECP.diis', exist=file_exists)
+          if (file_exists) then
+              OPEN(UNIT=97, FILE='MECP.diis')
+              CLOSE(97, STATUS='DELETE')
+          endif
+      endif
       
 C     Read current geometry and gradients
       CALL ReadXYZandGrad(inputname, Natom, Nx, natom_actual,
@@ -201,6 +351,15 @@ C     Compute the Effective Gradient according to selected algorithm
           CALL BPUPD_Gradient(Nx, Ea_2, Eb_2, Ga_2, Gb_2,
      &                        has_bp_prev, XBP_prev, YBP_prev,
      &                        ParG, PerpG, G_2, XBP_curr, YBP_curr)
+      else if (trim(algorithm) .eq. 'lagrange' .or.
+     &         trim(algorithm) .eq. 'pf') then
+          CALL LAGRANGE_Gradient(Nx, Ea_2, Eb_2, Ga_2, Gb_2,
+     &                           PF_ALPHA, PF_SIGMA,
+     &                           ParG, PerpG, G_2)
+          DO i = 1, Nx
+              XBP_curr(i) = 0.d0
+              YBP_curr(i) = 0.d0
+          END DO
       else
           CALL Effective_Gradient(Nx, Ea_2, Eb_2, Ga_2, Gb_2, 
      &                            ParG, PerpG, G_2)
@@ -212,34 +371,69 @@ C     Compute the Effective Gradient according to selected algorithm
      
 C     Perform BFGS update with configurable trust radius
       CALL UpdateX(Nx, Nstep, first_step, X_1, X_2, X_3, 
-     &             G_1, G_2, IH_1, IH_2, STPMX)
-     
-C     Test convergence (now with dynamic thresholds)
-      CALL TestConvergence(Nx, natom_actual, Nstep, AtNum, 
-     &                     Ea_2, Eb_2, X_2, X_3, ParG, PerpG, 
-     &                     G_2, Conv, TDE, TDXMax, TDXRMS, TGMax, TGRMS)
+     &             G_1, G_2, IH_1, IH_2, STPMX, hupd_method)
+
+C     Optional DIIS acceleration (XMECP-style GDIIS/GEDIIS)
+      stepnum = Nstep + 1
+      if (trim(opt_method) .eq. 'gdiis' .or.
+     &    trim(opt_method) .eq. 'gediis') then
+          EOBJ = Ea_2
+          CALL DIIS_UpdateX(Nx, stepnum, NDIIS, opt_method,
+     &                      X_2, G_2, IH_2, EOBJ,
+     &                      TGRMS, STPMX, X_3)
+      endif
+
+C     Test convergence
+C       - Standard algorithms: use Harvey-style thresholds (TDE/TG/TDX)
+C       - pf/lagrange: always use PF-specific criteria (XMECP-style)
+      if (trim(algorithm) .eq. 'lagrange' .or.
+     &    trim(algorithm) .eq. 'pf') then
+          CALL TestConvergencePF(Nx, natom_actual, Nstep, AtNum,
+     &                            Ea_1, Eb_1, Ea_2, Eb_2,
+     &                            X_2, X_3, G_2,
+     &                            PF_ALPHA, PF_SIGMA,
+     &                            PF_TSTEP, PF_TGRAD,
+     &                            Conv)
+      else
+          CALL TestConvergence(Nx, natom_actual, Nstep, AtNum,
+     &                         Ea_2, Eb_2, X_2, X_3, ParG, PerpG,
+     &                         G_2, Conv,
+     &                         TDE, TDXMax, TDXRMS, TGMax, TGRMS)
+      endif
      
       IF (Conv .eq. 1) THEN
           write(*,*) 'MECP optimization CONVERGED!'
           write(*,'(A,F18.10)') 'Final energy difference: ',
      &                          ABS(Ea_2 - Eb_2)
 C         Write convergence status and criteria
-          CALL WriteConvergenceInfo('CONVERGED', Nx, natom_actual, 
-     &                              Nstep, Ea_2, Eb_2, X_2, X_3, 
-     &                              ParG, PerpG, G_2, TDE, TDXMax, 
-     &                              TDXRMS, TGMax, TGRMS)
+          CALL WriteConvergenceInfo('CONVERGED', Nx, natom_actual,
+     &                              Nstep, algorithm,
+     &                              Ea_1, Eb_1, Ea_2, Eb_2,
+     &                              X_2, X_3, ParG, PerpG, G_2,
+     &                              TDE, TDXMax, TDXRMS, TGMax, TGRMS,
+     &                              PF_ALPHA, PF_SIGMA,
+     &                              PF_TSTEP, PF_TGRAD)
 C         Write final geometry
           CALL WriteXYZ('final.xyz', natom_actual, AtNum, X_3,
      &                  'MECP Converged')
 C         Clean up state file
           OPEN(UNIT=99, FILE='MECP.state')
           CLOSE(99, STATUS='DELETE')
+C         Clean up DIIS history file
+          inquire(file='MECP.diis', exist=file_exists)
+          if (file_exists) then
+              OPEN(UNIT=97, FILE='MECP.diis')
+              CLOSE(97, STATUS='DELETE')
+          endif
       ELSE
 C         Write convergence status and criteria
-          CALL WriteConvergenceInfo('NOT_CONVERGED', Nx, natom_actual, 
-     &                              Nstep, Ea_2, Eb_2, X_2, X_3, 
-     &                              ParG, PerpG, G_2, TDE, TDXMax,
-     &                              TDXRMS, TGMax, TGRMS)
+          CALL WriteConvergenceInfo('NOT_CONVERGED', Nx, natom_actual,
+     &                              Nstep, algorithm,
+     &                              Ea_1, Eb_1, Ea_2, Eb_2,
+     &                              X_2, X_3, ParG, PerpG, G_2,
+     &                              TDE, TDXMax, TDXRMS, TGMax, TGRMS,
+     &                              PF_ALPHA, PF_SIGMA,
+     &                              PF_TSTEP, PF_TGRAD)
 C         Write new geometry for next iteration
           CALL WriteXYZ('new.xyz', natom_actual, AtNum, X_3,
      &                  'MECP Step')
@@ -268,26 +462,56 @@ C     Error handling for argument parsing
 105   write(*,*) 'Error: Invalid value for --stpmx: ', trim(arg)
       stop
 
+106   write(*,*) 'Error: Invalid value for --pf_alpha: ', trim(arg)
+      stop
+107   write(*,*) 'Error: Invalid value for --pf_sigma: ', trim(arg)
+      stop
+
+109   write(*,*) 'Error: Invalid value for --pf_tstep: ', trim(arg)
+      stop
+110   write(*,*) 'Error: Invalid value for --pf_tgrad: ', trim(arg)
+      stop
+
+108   write(*,*) 'Error: Invalid value for --ndiis: ', trim(arg)
+      stop
+
 999   END
 
 
 C=====================================================================
-      SUBROUTINE WriteConvergenceInfo(status, Nx, Natom_actual, 
-     &                                 Nstep, Ea, Eb, X_2, X_3, 
-     &                                 ParG, PerpG, G, TDE, TDXMax,
-     &                                 TDXRMS, TGMax, TGRMS)
+      SUBROUTINE WriteConvergenceInfo(status, Nx, Natom_actual,
+     &                                 Nstep, algorithm,
+     &                                 Ea_prev, Eb_prev, Ea, Eb,
+     &                                 X_2, X_3,
+     &                                 ParG, PerpG, G,
+     &                                 TDE, TDXMax, TDXRMS, TGMax, TGRMS,
+     &                                 PF_ALPHA, PF_SIGMA,
+     &                                 PF_TSTEP, PF_TGRAD)
       implicit none
       
       CHARACTER*(*) status
+      CHARACTER*(*) algorithm
       INTEGER Nx, Natom_actual, Nstep, i
+      DOUBLE PRECISION Ea_prev, Eb_prev
       DOUBLE PRECISION Ea, Eb, X_2(Nx), X_3(Nx), ParG(Nx)
       DOUBLE PRECISION PerpG(Nx), G(Nx)
       DOUBLE PRECISION TDE, TDXMax, TDXRMS, TGMax, TGRMS
+      DOUBLE PRECISION PF_ALPHA, PF_SIGMA, PF_TSTEP, PF_TGRAD
       
       CHARACTER*3 flags(5)
       LOGICAL PConv(5)
       DOUBLE PRECISION DeltaX(Nx), DE, DXMax, DXRMS, GMax, GRMS
       DOUBLE PRECISION PpGRMS, PGRMS
+
+C     PF-specific convergence data (XMECP-style)
+      DOUBLE PRECISION de_pf, a_pf, s_pf, W_pf
+      DOUBLE PRECISION PF_PREV, PF_CURR
+      DOUBLE PRECISION func1, func2, func3
+      DOUBLE PRECISION gnorm, u(Nx)
+      CHARACTER*3 pflg(3)
+      LOGICAL PFConv(3)
+      DOUBLE PRECISION eps
+      PARAMETER (eps=1.0d-12)
 
 C     Calculate convergence criteria
       DE = ABS(Ea - Eb)
@@ -360,8 +584,127 @@ C     Write to convg.tmp file
      &    'Energy_Gap_Conv: ', DE, ' (', TDE, ') ', flags(5)
       WRITE(98,'(A,F12.6)') 'Parallel_Gradient_RMS: ', PGRMS
       WRITE(98,'(A,F12.6)') 'Perpendicular_Gradient_RMS: ', PpGRMS
+
+C     Append PF-specific convergence info for pf/lagrange.
+      if (trim(algorithm) .eq. 'lagrange' .or.
+     &    trim(algorithm) .eq. 'pf') then
+          a_pf = PF_ALPHA
+          s_pf = PF_SIGMA
+          if (a_pf .le. eps) a_pf = 1.0d-2
+
+          de_pf = Eb - Ea
+          W_pf = 1.0d0 + (de_pf*de_pf)/(a_pf*a_pf)
+          PF_CURR = 0.5d0*(Ea+Eb) + s_pf*a_pf*a_pf*log(W_pf)
+
+          de_pf = Eb_prev - Ea_prev
+          W_pf = 1.0d0 + (de_pf*de_pf)/(a_pf*a_pf)
+          PF_PREV = 0.5d0*(Ea_prev+Eb_prev) + s_pf*a_pf*a_pf*log(W_pf)
+
+          func1 = PF_PREV - PF_CURR
+
+          gnorm = 0.d0
+          do i = 1, Nx
+              gnorm = gnorm + G(i)*G(i)
+          end do
+          gnorm = sqrt(gnorm)
+          if (gnorm .gt. eps) then
+              do i = 1, Nx
+                  u(i) = G(i) / gnorm
+              end do
+          else
+              do i = 1, Nx
+                  u(i) = 0.d0
+              end do
+          endif
+
+          func2 = 0.d0
+          do i = 1, Nx
+              func2 = func2 - G(i)*u(i)
+          end do
+
+          func3 = 0.d0
+          do i = 1, Nx
+              func3 = func3 + ( (-G(i) - func2*u(i))**2 )
+          end do
+          func3 = sqrt(func3)
+
+          do i = 1, 3
+              pflg(i) = " NO"
+              PFConv(i) = .false.
+          end do
+          if (abs(func1) .lt. PF_TSTEP) then
+              PFConv(1) = .true.
+              pflg(1) = "YES"
+          endif
+          if (abs(func2) .lt. PF_TGRAD) then
+              PFConv(2) = .true.
+              pflg(2) = "YES"
+          endif
+          if (abs(func3) .lt. PF_TGRAD) then
+              PFConv(3) = .true.
+              pflg(3) = "YES"
+          endif
+
+          WRITE(98,'(A)') 'PF_Convergence_Criteria:'
+          WRITE(98,'(A,F20.10)') 'PF_Objective: ', PF_CURR
+          WRITE(98,'(A,F12.6,A,F9.6,A,A3)')
+     &        'PF_Function1: ', func1, ' (', PF_TSTEP, ') ', pflg(1)
+          WRITE(98,'(A,F12.6,A,F9.6,A,A3)')
+     &        'PF_Function2: ', func2, ' (', PF_TGRAD, ') ', pflg(2)
+          WRITE(98,'(A,F12.6,A,F9.6,A,A3)')
+     &        'PF_Function3: ', func3, ' (', PF_TGRAD, ') ', pflg(3)
+      endif
       CLOSE(98)
       
+      RETURN
+      END
+
+
+C=====================================================================
+C                    Lagrangian Constraint Gradient
+C   (XMECP-style penalty-function / augmented-Lagrangian form)
+C
+C   Objective function (not explicitly used here):
+C     G = (E1+E2)/2 + sigma*alpha^2*log(1 + (dE^2)/(alpha^2))
+C   Its gradient:
+C     grad = 0.5*(g1+g2) + (2*sigma*dE/(1+dE^2/alpha^2))*(g2-g1)
+C
+C   Here we return:
+C     ParG  = mean gradient (0.5*(g1+g2))
+C     PerpG = difference gradient (g2-g1)
+C     G     = effective gradient for BFGS
+C
+C   Parameters:
+C     PF_ALPHA (alpha) in Hartree
+C     PF_SIGMA (sigma) in 1/Hartree
+C=====================================================================
+      SUBROUTINE LAGRANGE_Gradient(N,Ea,Eb,Ga,Gb,PF_ALPHA,PF_SIGMA,
+     &                            ParG,PerpG,G)
+      implicit none
+      INTEGER N, i
+      DOUBLE PRECISION Ea, Eb, PF_ALPHA, PF_SIGMA
+      DOUBLE PRECISION Ga(N), Gb(N), ParG(N), PerpG(N), G(N)
+      DOUBLE PRECISION de, a, s, W, gscale
+      DOUBLE PRECISION eps
+      PARAMETER (eps=1.0d-12)
+
+      de = Eb - Ea
+      a = PF_ALPHA
+      s = PF_SIGMA
+
+      IF (a .le. eps) THEN
+          a = 1.0d-2
+      END IF
+
+      W = 1.0d0 + (de*de)/(a*a)
+      gscale = 2.0d0 * s * de / W
+
+      DO i = 1, N
+          ParG(i) = 0.5d0 * (Ga(i) + Gb(i))
+          PerpG(i) = Gb(i) - Ga(i)
+          G(i) = ParG(i) + gscale * PerpG(i)
+      END DO
+
       RETURN
       END
 
@@ -727,7 +1070,7 @@ C  Using facPP ~ 140 /Hartree means that along this coordinate, too, the Hessian
 
 
 C=====================================================================
-C                          BPUPD_Gradient
+C                          BPUPD_Gradient (修正版)
 C=====================================================================
       SUBROUTINE BPUPD_Gradient(N,Ea,Eb,Ga,Gb,HasPrev,
      &                         Xprev,Yprev,ParG,PerpG,G,Xout,Yout)
@@ -868,22 +1211,31 @@ C=====================================================================
 C                           UpdateX
 C=====================================================================
        SUBROUTINE UpdateX(N,Nstep,FirstStep,X_1,X_2,X_3,G_1,G_2,
-     &                   HI_1,HI_2,STPMX)
+     &                   HI_1,HI_2,STPMX,HUPDMETHOD)
        implicit none
-       
-       ! Specially Adapted BFGS routine from Numerical Recipes
-       ! Modified to accept STPMX as parameter instead of using fixed value
-       
-       integer i, j, k, n, Nstep
+
+       ! Quasi-Newton step with selectable inverse-Hessian update:
+       !   bfgs   - inverse BFGS update (default / legacy)
+       !   psb    - inverse Powell-Symmetric-Broyden update (XMECP-style)
+       !   sr1    - inverse Symmetric Rank-1 update
+       !   bofill - Bofill mix of SR1 and PSB (inverse form)
+
+       integer i, j, n, Nstep
        logical FirstStep
        double precision X_1(N), X_2(N), G_1(N), G_2(N)
        double precision HI_1(N,N), X_3(N), HI_2(N,N)
-       double precision STPMX  ! Now passed as parameter
-       
-       double precision stpmax, DelG(N), HDelG(N), ChgeX(N), DelX(N), w(N), fac,
-     & fad, fae, sumdg, sumdx, stpl, lgstst
-       
+       double precision STPMX
+       CHARACTER*(*) HUPDMETHOD
+
+       double precision stpmax, DelG(N), HDelG(N), ChgeX(N), DelX(N)
+       double precision w(N), fac, fad, fae, stpl, lgstst
+       double precision Rvec(N)
+       double precision sumyy, sumrr, yTr, denom, eps
+       double precision HIPSB(N,N), HISR1(N,N), phi, tmp
+
+       eps = 1.0d-12
        stpmax = STPMX * N
+
        IF (FirstStep) THEN
            DO i = 1, n
                ChgeX(i) = -.7d0 * G_2(i)
@@ -892,37 +1244,145 @@ C=====================================================================
                end do
            end do
        ELSE
+C         Build secant vectors: s = X_2 - X_1, y = G_2 - G_1
            DO i = 1, n
                DelG(i) = G_2(i) - G_1(i)
                DelX(i) = X_2(i) - X_1(i)
            end do
+C         HDelG = HI_1 * y
            do i = 1, n
                HDelG(i) = 0.d0
                do j = 1, n
-                   hdelg(i) = hdelg(i) + HI_1(i,j) * DelG(j)
+                   HDelG(i) = HDelG(i) + HI_1(i,j) * DelG(j)
                end do
            end do
-           fac = 0.d0
-           fae = 0.d0
-           sumdg = 0.d0
-           sumdx = 0.d0
+C         Default: keep previous inverse Hessian
            do i = 1, n
-               fac = fac + delg(i) * delx(i)
-               fae = fae + delg(i) * hdelg(i)
-               sumdg = sumdg + delg(i)**2
-               sumdx = sumdx + delx(i)**2
-           end do
-           fac = 1.d0 / fac
-           fad = 1.d0 / fae
-           do i = 1, n
-               w(i) = fac * DelX(i) - fad * HDelG(i)
-           end do
-           DO I = 1, N
                do j = 1, n
-                   HI_2(i,j) = HI_1(i,j) + fac * delx(i) * delx(j) -
-     &                fad * HDelG(I) * HDelG(j) + fae * w(i) * w(j)
+                   HI_2(i,j) = HI_1(i,j)
                end do
            end do
+
+           if (trim(HUPDMETHOD) .eq. 'bfgs') then
+C             --- inverse BFGS update (legacy) ---
+               denom = 0.d0
+               fae   = 0.d0
+               do i = 1, n
+                   denom = denom + DelG(i) * DelX(i)   ! y^T s
+                   fae   = fae   + DelG(i) * HDelG(i)  ! y^T H y
+               end do
+               if (abs(denom) .gt. eps .and. abs(fae) .gt. eps) then
+                   fac = 1.d0 / denom
+                   fad = 1.d0 / fae
+                   do i = 1, n
+                       w(i) = fac * DelX(i) - fad * HDelG(i)
+                   end do
+                   do i = 1, n
+                       do j = 1, n
+                           HI_2(i,j) = HI_1(i,j)
+     &                       + fac * DelX(i) * DelX(j)
+     &                       - fad * HDelG(i) * HDelG(j)
+     &                       + fae * w(i) * w(j)
+                       end do
+                   end do
+               endif
+
+           else
+C             Residual r = s - H y  (for inverse-Hessian updates)
+               do i = 1, n
+                   Rvec(i) = DelX(i) - HDelG(i)
+               end do
+               sumyy = 0.d0
+               sumrr = 0.d0
+               yTr   = 0.d0
+               do i = 1, n
+                   sumyy = sumyy + DelG(i) * DelG(i)
+                   sumrr = sumrr + Rvec(i) * Rvec(i)
+                   yTr   = yTr   + DelG(i) * Rvec(i)
+               end do
+
+               if (trim(HUPDMETHOD) .eq. 'psb') then
+C                 --- inverse PSB update ---
+                   if (sumyy .gt. eps) then
+                       do i = 1, n
+                           do j = 1, n
+                               HI_2(i,j) = HI_1(i,j)
+     &                         + (Rvec(i) * DelG(j)
+     &                         +  DelG(i) * Rvec(j)) / sumyy
+     &                         - (yTr / (sumyy*sumyy))
+     &                         *  DelG(i) * DelG(j)
+                           end do
+                       end do
+                   endif
+
+               else if (trim(HUPDMETHOD) .eq. 'sr1') then
+C                 --- inverse SR1 update ---
+                   denom = yTr   ! r^T y
+                   if (abs(denom) .gt. eps .and. sumrr .gt. eps) then
+                       do i = 1, n
+                           do j = 1, n
+                               HI_2(i,j) = HI_1(i,j)
+     &                         + Rvec(i) * Rvec(j) / denom
+                           end do
+                       end do
+                   endif
+
+               else if (trim(HUPDMETHOD) .eq. 'bofill') then
+C                 --- Bofill mix of SR1 and PSB (inverse form) ---
+C                 Build PSB candidate
+                   do i = 1, n
+                       do j = 1, n
+                           HIPSB(i,j) = HI_1(i,j)
+                           HISR1(i,j) = HI_1(i,j)
+                       end do
+                   end do
+                   if (sumyy .gt. eps) then
+                       do i = 1, n
+                           do j = 1, n
+                               HIPSB(i,j) = HI_1(i,j)
+     &                         + (Rvec(i) * DelG(j)
+     &                         +  DelG(i) * Rvec(j)) / sumyy
+     &                         - (yTr / (sumyy*sumyy))
+     &                         *  DelG(i) * DelG(j)
+                           end do
+                       end do
+                   endif
+C                 Build SR1 candidate
+                   denom = yTr
+                   if (abs(denom) .gt. eps .and. sumrr .gt. eps) then
+                       do i = 1, n
+                           do j = 1, n
+                               HISR1(i,j) = HI_1(i,j)
+     &                         + Rvec(i) * Rvec(j) / denom
+                           end do
+                       end do
+                   endif
+C                 Mixing parameter phi (0..1)
+                   phi = 0.d0
+                   if (sumrr .gt. eps .and. sumyy .gt. eps) then
+                       phi = (yTr*yTr) / (sumrr*sumyy)
+                       if (phi .lt. 0.d0) phi = 0.d0
+                       if (phi .gt. 1.d0) phi = 1.d0
+                   endif
+                   do i = 1, n
+                       do j = 1, n
+                           HI_2(i,j) = phi * HISR1(i,j)
+     &                               + (1.d0-phi) * HIPSB(i,j)
+                       end do
+                   end do
+               endif
+           endif
+
+C         Symmetrize to suppress numerical drift
+           do i = 1, n
+               do j = i + 1, n
+                   tmp = 0.5d0 * (HI_2(i,j) + HI_2(j,i))
+                   HI_2(i,j) = tmp
+                   HI_2(j,i) = tmp
+               end do
+           end do
+
+C         Compute quasi-Newton step: dx = -HI_2 * g
            do i = 1, n
                ChgeX(i) = 0.d0
                do j = 1, n
@@ -930,7 +1390,8 @@ C=====================================================================
                end do
            end do
        END IF
-       
+
+C     Step-length control (trust radius + max component)
        fac = 0.d0
        do i = 1, n
            fac = fac + ChgeX(i)**2
@@ -953,9 +1414,158 @@ C=====================================================================
        do i = 1, n
            X_3(i) = X_2(i) + ChgeX(i)
        end do
-       
+
        END
 
+
+C=====================================================================
+C                    PF-specific Convergence Test
+C   For pf/lagrange algorithms: always use PF-exclusive criteria.
+C   Reference: XMECP optimizer.isconver_pf()
+C
+C   Criteria:
+C     func1 = PF_prev - PF_curr  (objective change)
+C     func2 = dot(-grad, u)      (|grad|, u is normalized grad)
+C     func3 = norm(-grad - func2*u) (orthogonal component)
+C
+C   Converged if:
+C     |func1| < PF_TSTEP and |func2| < PF_TGRAD and |func3| < PF_TGRAD
+C=====================================================================
+      SUBROUTINE TestConvergencePF(Nx,Natom_actual,Nstep,AtNum,
+     &                             Ea_prev,Eb_prev,Ea,Eb,
+     &                             X_2,X_3,G,
+     &                             PF_ALPHA,PF_SIGMA,
+     &                             PF_TSTEP,PF_TGRAD,
+     &                             Conv)
+      implicit none
+
+      INTEGER Nx, Natom_actual, AtNum(*), Nstep, Conv
+      INTEGER i, k
+      DOUBLE PRECISION Ea_prev, Eb_prev, Ea, Eb
+      DOUBLE PRECISION X_2(Nx), X_3(Nx), G(Nx)
+      DOUBLE PRECISION PF_ALPHA, PF_SIGMA, PF_TSTEP, PF_TGRAD
+
+      DOUBLE PRECISION a, s, de, W
+      DOUBLE PRECISION PF_PREV, PF_CURR
+      DOUBLE PRECISION func1, func2, func3
+      DOUBLE PRECISION gnorm, u(Nx)
+      CHARACTER*3 flags(3)
+      LOGICAL PFConv(3)
+      CHARACTER*2 element
+      DOUBLE PRECISION eps
+      PARAMETER (eps=1.0d-12)
+
+      a = PF_ALPHA
+      s = PF_SIGMA
+      if (a .le. eps) a = 1.0d-2
+
+C     Compute PF objective at current and previous steps
+      de = Eb - Ea
+      W = 1.0d0 + (de*de)/(a*a)
+      PF_CURR = 0.5d0*(Ea+Eb) + s*a*a*log(W)
+
+      de = Eb_prev - Ea_prev
+      W = 1.0d0 + (de*de)/(a*a)
+      PF_PREV = 0.5d0*(Ea_prev+Eb_prev) + s*a*a*log(W)
+
+      func1 = PF_PREV - PF_CURR
+
+C     Compute func2/func3 from effective gradient
+      gnorm = 0.d0
+      do i = 1, Nx
+          gnorm = gnorm + G(i)*G(i)
+      end do
+      gnorm = sqrt(gnorm)
+
+      if (gnorm .gt. eps) then
+          do i = 1, Nx
+              u(i) = G(i) / gnorm
+          end do
+      else
+          do i = 1, Nx
+              u(i) = 0.d0
+          end do
+      endif
+
+      func2 = 0.d0
+      do i = 1, Nx
+          func2 = func2 - G(i)*u(i)
+      end do
+
+      func3 = 0.d0
+      do i = 1, Nx
+          func3 = func3 + ( (-G(i) - func2*u(i))**2 )
+      end do
+      func3 = sqrt(func3)
+
+C     Evaluate PF convergence flags
+      Conv = 0
+      do i = 1, 3
+          flags(i) = " NO"
+          PFConv(i) = .false.
+      end do
+
+      if (abs(func1) .lt. PF_TSTEP) then
+          PFConv(1) = .true.
+          flags(1) = "YES"
+      endif
+      if (abs(func2) .lt. PF_TGRAD) then
+          PFConv(2) = .true.
+          flags(2) = "YES"
+      endif
+      if (abs(func3) .lt. PF_TGRAD) then
+          PFConv(3) = .true.
+          flags(3) = "YES"
+      endif
+
+      Nstep = Nstep + 1
+      if (PFConv(1) .and. PFConv(2) .and. PFConv(3)) then
+          Conv = 1
+      else
+          Conv = 0
+      endif
+
+C     Write header for first step
+      IF (Nstep .eq. 1) THEN
+          write(*,*)
+          write(*,'(A)') '  =========================================='
+          write(*,'(A)') '       Geometry Optimization of an MECP'
+          write(*,'(A)') '       Penalty Function / Augmented-Lagrangian'
+          write(*,'(A)') '       baneMECP v1.1, Sept. 2025'
+          write(*,'(A)') '       modified from sobMECP@sobereva'
+          write(*,'(A)') '       feedback: banerxmd@gmail.com'
+          write(*,'(A)') '  =========================================='
+          write(*,*)
+          write(*,'(A)') '  Initial Geometry:'
+          DO i = 1, Natom_actual
+              k = 3*(i-1) + 1
+              CALL NumberToElement(AtNum(i), element)
+              WRITE(*,'(A,A2,3F16.8)') '    ', element, X_2(k),
+     &                                 X_2(k+1), X_2(k+2)
+          END DO
+          write(*,*)
+      END IF
+
+C     Print PF convergence info to screen (XMECP-style)
+      write(*,*)
+      write(*,'(A,I4,A)') '  ===== MECP Optimization Step',
+     &                     Nstep, ' (PF/Lagrange) ====='
+      write(*,'(A,F20.10)') '    Energy of State 1:  ', Ea
+      write(*,'(A,F20.10)') '    Energy of State 2:  ', Eb
+      write(*,'(A,F20.10)') '    Energy Difference:  ', ABS(Ea-Eb)
+      write(*,'(A,F20.10)') '    PF Objective:       ', PF_CURR
+      write(*,*)
+      write(*,'(A)') '  PF Convergence Check:'
+      write(*,'(A,F12.6,A,F9.6,A,A3)')
+     &    '    PF Function1:     ', func1, ' (', PF_TSTEP, ')  ', flags(1)
+      write(*,'(A,F12.6,A,F9.6,A,A3)')
+     &    '    PF Function2:     ', func2, ' (', PF_TGRAD, ')  ', flags(2)
+      write(*,'(A,F12.6,A,F9.6,A,A3)')
+     &    '    PF Function3:     ', func3, ' (', PF_TGRAD, ')  ', flags(3)
+      write(*,*)
+
+      return
+      END
 
 C=====================================================================
       SUBROUTINE TestConvergence(Nx,Natom_actual,Nstep,AtNum,Ea,Eb,
@@ -1032,8 +1642,16 @@ C=====================================================================
           Conv = 0
       END IF
 
-C     Write initial geometry for first step
+C     Write header for first step
       IF (Nstep .eq. 1) THEN
+          write(*,*)
+          write(*,'(A)') '  =========================================='
+          write(*,'(A)') '       Geometry Optimization of an MECP'
+          write(*,'(A)') '       Original: J. N. Harvey, March 1999'
+          write(*,'(A)') '       baneMECP v1.1, Sept. 2025'
+          write(*,'(A)') '       modified from sobMECP@sobereva'
+          write(*,'(A)') '       feedback: banerxmd@gmail.com'
+          write(*,'(A)') '  =========================================='
           write(*,*)
           write(*,'(A)') '  Initial Geometry:'
           DO i = 1, Natom_actual
@@ -1102,5 +1720,533 @@ C     Write gradient details
           write(*,*)
       END IF
 
+      return
+      END
+
+C=====================================================================
+C                    DIIS acceleration (GDIIS / GEDIIS)
+C=====================================================================
+      SUBROUTINE DIIS_UpdateX(Nx, Step, NDIIS, OPTMETHOD,
+     &                        XCURR, GCURR, HICURR, EOBJ,
+     &                        TGRMS, STPMX, XNEW)
+      implicit none
+
+      INTEGER Nx, Step, NDIIS
+      CHARACTER*(*) OPTMETHOD
+      DOUBLE PRECISION XCURR(Nx), GCURR(Nx), HICURR(Nx,Nx)
+      DOUBLE PRECISION EOBJ, TGRMS, STPMX
+      DOUBLE PRECISION XNEW(Nx)
+
+      INTEGER MAXDIIS
+      parameter (MAXDIIS=8)
+
+      INTEGER nHist
+      DOUBLE PRECISION XH(MAXDIIS, Nx), GH(MAXDIIS, Nx)
+      DOUBLE PRECISION EH(MAXDIIS)
+      DOUBLE PRECISION XGDIIS(Nx), XGEDIIS(Nx)
+      INTEGER info
+      LOGICAL do_diis
+
+C     Read and update history (always)
+      call DIIS_ReadHistory('MECP.diis', MAXDIIS, Nx, nHist, XH, GH, EH)
+      call DIIS_AppendHistory(MAXDIIS, Nx, nHist, NDIIS,
+     &                        XCURR, GCURR, EOBJ, XH, GH, EH)
+      call DIIS_WriteHistory('MECP.diis', Nx, nHist, XH, GH, EH)
+
+C     Only start DIIS after a couple of steps (match XMECP behavior)
+      do_diis = .false.
+      if (Step .ge. 3) do_diis = .true.
+      if (NDIIS .le. 0) do_diis = .false.
+      if (trim(OPTMETHOD) .eq. 'bfgs') do_diis = .false.
+      if (.not. do_diis) return
+
+C     --- GDIIS ---
+      call DIIS_GDIIS(Nx, nHist, XH, GH, HICURR, XGDIIS, info)
+      if (info .ne. 0) then
+          write(*,*) 'Warning: GDIIS failed (singular system).'
+          return
+      endif
+
+      if (trim(OPTMETHOD) .eq. 'gediis') then
+C         --- GEDIIS (optional) ---
+          call DIIS_GEDIIS(Nx, nHist, XH, GH, EH, HICURR, XGEDIIS, info)
+          if (info .ne. 0) then
+              write(*,*) 'Warning: GEDIIS failed; using GDIIS only.'
+              call DIIS_CopyVec(Nx, XGDIIS, XNEW)
+          else
+C             Blend GDIIS and GEDIIS proposals for stability
+              call DIIS_BlendVec(Nx, XGDIIS, XGEDIIS, 0.5d0, XNEW)
+          endif
+          write(*,'(A,I4)') 'Entering GEDIIS Step ', Step
+      else
+          call DIIS_CopyVec(Nx, XGDIIS, XNEW)
+          write(*,'(A,I4)') 'Entering GDIIS Step ', Step
+      endif
+
+C     Apply step-size control (trust radius + mild damping near convergence)
+      call DIIS_StepControl(Nx, XCURR, GCURR, TGRMS, STPMX, XNEW)
+
+      RETURN
+      END
+
+
+C=====================================================================
+      SUBROUTINE DIIS_ReadHistory(fname, MAXDIIS, Nx, nHist, XH, GH, EH)
+      implicit none
+
+      CHARACTER*(*) fname
+      INTEGER MAXDIIS, Nx, nHist
+      DOUBLE PRECISION XH(MAXDIIS, Nx), GH(MAXDIIS, Nx), EH(MAXDIIS)
+
+      LOGICAL exists
+      INTEGER nfile, nxfile, i, j, idx, start
+      DOUBLE PRECISION etmp
+      DOUBLE PRECISION xtmp(Nx), gtmp(Nx)
+
+      inquire(file=fname, exist=exists)
+      if (.not. exists) then
+          nHist = 0
+          return
+      endif
+
+      OPEN(UNIT=91, FILE=fname, STATUS='OLD', ERR=900)
+      READ(91,*,END=900,ERR=900) nfile
+      READ(91,*,END=900,ERR=900) nxfile
+
+      if (nxfile .ne. Nx) then
+          nHist = 0
+          CLOSE(91)
+          return
+      endif
+
+      if (nfile .le. 0) then
+          nHist = 0
+          CLOSE(91)
+          return
+      endif
+
+      if (nfile .gt. MAXDIIS) then
+          start = nfile - MAXDIIS + 1
+          nHist = MAXDIIS
+      else
+          start = 1
+          nHist = nfile
+      endif
+
+      idx = 0
+      do i = 1, nfile
+          READ(91,*,END=900,ERR=900) etmp
+          do j = 1, Nx
+              READ(91,*,END=900,ERR=900) xtmp(j)
+          end do
+          do j = 1, Nx
+              READ(91,*,END=900,ERR=900) gtmp(j)
+          end do
+
+          if (i .ge. start) then
+              idx = idx + 1
+              EH(idx) = etmp
+              do j = 1, Nx
+                  XH(idx, j) = xtmp(j)
+                  GH(idx, j) = gtmp(j)
+              end do
+          endif
+      end do
+
+      CLOSE(91)
+      return
+
+  900 continue
+      nHist = 0
+      CLOSE(91)
+      return
+      END
+
+
+C=====================================================================
+      SUBROUTINE DIIS_WriteHistory(fname, Nx, nHist, XH, GH, EH)
+      implicit none
+
+      CHARACTER*(*) fname
+      INTEGER Nx, nHist, i, j
+      DOUBLE PRECISION XH(8, Nx), GH(8, Nx), EH(8)
+
+      OPEN(UNIT=92, FILE=fname, STATUS='UNKNOWN')
+      WRITE(92,*) nHist
+      WRITE(92,*) Nx
+      do i = 1, nHist
+          WRITE(92,'(F20.12)') EH(i)
+          do j = 1, Nx
+              WRITE(92,'(F20.12)') XH(i, j)
+          end do
+          do j = 1, Nx
+              WRITE(92,'(F20.12)') GH(i, j)
+          end do
+      end do
+      CLOSE(92)
+      return
+      END
+
+
+C=====================================================================
+      SUBROUTINE DIIS_AppendHistory(MAXDIIS, Nx, nHist, NDIIS,
+     &                              XCURR, GCURR, EOBJ, XH, GH, EH)
+      implicit none
+
+      INTEGER MAXDIIS, Nx, nHist, NDIIS
+      DOUBLE PRECISION XCURR(Nx), GCURR(Nx), EOBJ
+      DOUBLE PRECISION XH(MAXDIIS, Nx), GH(MAXDIIS, Nx), EH(MAXDIIS)
+
+      INTEGER keep, i, j
+
+      keep = NDIIS
+      if (keep .le. 0) keep = 1
+      if (keep .gt. MAXDIIS) keep = MAXDIIS
+
+      if (nHist .ge. keep) then
+C         Drop oldest to keep history length <= keep-1 before append
+          do i = 1, keep-1
+              EH(i) = EH(i+1)
+              do j = 1, Nx
+                  XH(i, j) = XH(i+1, j)
+                  GH(i, j) = GH(i+1, j)
+              end do
+          end do
+          nHist = keep - 1
+      endif
+
+      nHist = nHist + 1
+      EH(nHist) = EOBJ
+      do j = 1, Nx
+          XH(nHist, j) = XCURR(j)
+          GH(nHist, j) = GCURR(j)
+      end do
+
+      return
+      END
+
+
+C=====================================================================
+      SUBROUTINE DIIS_GDIIS(Nx, nHist, XH, GH, HI, XOUT, info)
+      implicit none
+
+      INTEGER Nx, nHist, info
+      DOUBLE PRECISION XH(8, Nx), GH(8, Nx), HI(Nx, Nx)
+      DOUBLE PRECISION XOUT(Nx)
+
+      INTEGER i, j, k, m, nsys
+      DOUBLE PRECISION EV(8, Nx)
+      DOUBLE PRECISION B(8, 8)
+      DOUBLE PRECISION A(10, 10), rhs(10), sol(10)
+      DOUBLE PRECISION tmpX(Nx), tmpG(Nx), step(Nx)
+
+      info = 0
+      if (nHist .le. 0) then
+          info = 1
+          return
+      endif
+
+C     Error vectors: e_i = HI * g_i
+      do i = 1, nHist
+          do k = 1, Nx
+              EV(i, k) = 0.d0
+              do j = 1, Nx
+                  EV(i, k) = EV(i, k) + HI(k, j) * GH(i, j)
+              end do
+          end do
+      end do
+
+C     B matrix = e_i · e_j
+      do i = 1, nHist
+          do j = 1, nHist
+              B(i, j) = 0.d0
+              do k = 1, Nx
+                  B(i, j) = B(i, j) + EV(i, k) * EV(j, k)
+              end do
+          end do
+      end do
+
+C     Build augmented system
+      nsys = nHist + 1
+      do i = 1, nsys
+          rhs(i) = 0.d0
+          do j = 1, nsys
+              A(i, j) = 0.d0
+          end do
+      end do
+
+      do i = 1, nHist
+          do j = 1, nHist
+              A(i, j) = B(i, j)
+          end do
+          A(i, nsys) = 1.d0
+          A(nsys, i) = 1.d0
+      end do
+      A(nsys, nsys) = 0.d0
+      rhs(nsys) = 1.d0
+
+      call DIIS_Solve(nsys, A, rhs, sol, info)
+      if (info .ne. 0) return
+
+C     tmpX = Σ c_i X_i ; tmpG = Σ c_i G_i
+      do k = 1, Nx
+          tmpX(k) = 0.d0
+          tmpG(k) = 0.d0
+      end do
+
+      do i = 1, nHist
+          do k = 1, Nx
+              tmpX(k) = tmpX(k) + sol(i) * XH(i, k)
+              tmpG(k) = tmpG(k) + sol(i) * GH(i, k)
+          end do
+      end do
+
+C     Xout = tmpX - HI * tmpG
+      do k = 1, Nx
+          step(k) = 0.d0
+          do j = 1, Nx
+              step(k) = step(k) + HI(k, j) * tmpG(j)
+          end do
+          XOUT(k) = tmpX(k) - step(k)
+      end do
+
+      return
+      END
+
+
+C=====================================================================
+      SUBROUTINE DIIS_GEDIIS(Nx, nHist, XH, GH, EH, HI, XOUT, info)
+      implicit none
+
+      INTEGER Nx, nHist, info
+      DOUBLE PRECISION XH(8, Nx), GH(8, Nx), EH(8), HI(Nx, Nx)
+      DOUBLE PRECISION XOUT(Nx)
+
+      INTEGER i, j, k, nsys
+      DOUBLE PRECISION M(8, 8)
+      DOUBLE PRECISION A(10, 10), rhs(10), sol(10)
+      DOUBLE PRECISION tmpX(Nx), tmpG(Nx), step(Nx)
+      DOUBLE PRECISION val
+
+      info = 0
+      if (nHist .le. 0) then
+          info = 1
+          return
+      endif
+
+C     Build GEDIIS matrix M(i,j) = - (g_i - g_j) · (x_i - x_j)
+      do i = 1, nHist
+          do j = 1, nHist
+              M(i, j) = 0.d0
+          end do
+      end do
+
+      do i = 1, nHist
+          M(i, i) = 0.d0
+          do j = i+1, nHist
+              val = 0.d0
+              do k = 1, Nx
+                  val = val + (GH(i, k) - GH(j, k)) * (XH(i, k) - XH(j, k))
+              end do
+              M(i, j) = -val
+              M(j, i) = M(i, j)
+          end do
+      end do
+
+C     Build augmented system
+      nsys = nHist + 1
+      do i = 1, nsys
+          rhs(i) = 0.d0
+          do j = 1, nsys
+              A(i, j) = 0.d0
+          end do
+      end do
+
+      do i = 1, nHist
+          do j = 1, nHist
+              A(i, j) = M(i, j)
+          end do
+          A(i, nsys) = 1.d0
+          A(nsys, i) = 1.d0
+          rhs(i) = -EH(i)
+      end do
+      A(nsys, nsys) = 0.d0
+      rhs(nsys) = 1.d0
+
+      call DIIS_Solve(nsys, A, rhs, sol, info)
+      if (info .ne. 0) return
+
+C     tmpX = Σ c_i X_i ; tmpG = Σ c_i G_i
+      do k = 1, Nx
+          tmpX(k) = 0.d0
+          tmpG(k) = 0.d0
+      end do
+
+      do i = 1, nHist
+          do k = 1, Nx
+              tmpX(k) = tmpX(k) + sol(i) * XH(i, k)
+              tmpG(k) = tmpG(k) + sol(i) * GH(i, k)
+          end do
+      end do
+
+C     Xout = tmpX - HI * tmpG
+      do k = 1, Nx
+          step(k) = 0.d0
+          do j = 1, Nx
+              step(k) = step(k) + HI(k, j) * tmpG(j)
+          end do
+          XOUT(k) = tmpX(k) - step(k)
+      end do
+
+      return
+      END
+
+
+C=====================================================================
+      SUBROUTINE DIIS_StepControl(Nx, XCURR, GCURR, TGRMS, STPMX, XNEW)
+      implicit none
+
+      INTEGER Nx, i
+      DOUBLE PRECISION XCURR(Nx), GCURR(Nx), TGRMS, STPMX, XNEW(Nx)
+      DOUBLE PRECISION dX(Nx), g2, grms, factor
+      DOUBLE PRECISION stpmax, stpl, lgstst
+
+C     Mild damping near convergence (similar spirit to XMECP)
+      g2 = 0.d0
+      do i = 1, Nx
+          g2 = g2 + GCURR(i) * GCURR(i)
+      end do
+      grms = SQRT(g2 / Nx)
+
+      factor = 1.d0
+      if (grms .lt. 10.d0 * TGRMS) factor = 0.5d0
+
+      do i = 1, Nx
+          dX(i) = (XNEW(i) - XCURR(i)) * factor
+      end do
+
+C     Apply trust radius limits (same logic as UpdateX)
+      stpmax = STPMX * Nx
+      stpl = 0.d0
+      do i = 1, Nx
+          stpl = stpl + dX(i) * dX(i)
+      end do
+      stpl = SQRT(stpl)
+
+      if (stpl .gt. stpmax .and. stpl .gt. 0.d0) then
+          do i = 1, Nx
+              dX(i) = dX(i) / stpl * stpmax
+          end do
+      endif
+
+      lgstst = 0.d0
+      do i = 1, Nx
+          if (ABS(dX(i)) .gt. lgstst) lgstst = ABS(dX(i))
+      end do
+
+      if (lgstst .gt. STPMX .and. lgstst .gt. 0.d0) then
+          do i = 1, Nx
+              dX(i) = dX(i) / lgstst * STPMX
+          end do
+      endif
+
+      do i = 1, Nx
+          XNEW(i) = XCURR(i) + dX(i)
+      end do
+
+      return
+      END
+
+
+C=====================================================================
+      SUBROUTINE DIIS_Solve(N, A, b, x, info)
+      implicit none
+
+      INTEGER N, info
+      DOUBLE PRECISION A(10,10), b(10), x(10)
+
+      INTEGER i, j, k, p
+      DOUBLE PRECISION tmp, factor, sum, maxval
+
+      info = 0
+
+      do k = 1, N-1
+C         Pivot selection
+          p = k
+          maxval = ABS(A(k, k))
+          do i = k+1, N
+              if (ABS(A(i, k)) .gt. maxval) then
+                  maxval = ABS(A(i, k))
+                  p = i
+              endif
+          end do
+
+          if (maxval .lt. 1.d-14) then
+              info = 1
+              return
+          endif
+
+C         Swap rows if needed
+          if (p .ne. k) then
+              do j = k, N
+                  tmp = A(k, j)
+                  A(k, j) = A(p, j)
+                  A(p, j) = tmp
+              end do
+              tmp = b(k)
+              b(k) = b(p)
+              b(p) = tmp
+          endif
+
+C         Elimination
+          do i = k+1, N
+              factor = A(i, k) / A(k, k)
+              A(i, k) = 0.d0
+              do j = k+1, N
+                  A(i, j) = A(i, j) - factor * A(k, j)
+              end do
+              b(i) = b(i) - factor * b(k)
+          end do
+      end do
+
+      if (ABS(A(N, N)) .lt. 1.d-14) then
+          info = 1
+          return
+      endif
+
+C     Back substitution
+      x(N) = b(N) / A(N, N)
+      do i = N-1, 1, -1
+          sum = b(i)
+          do j = i+1, N
+              sum = sum - A(i, j) * x(j)
+          end do
+          x(i) = sum / A(i, i)
+      end do
+
+      return
+      END
+
+
+C=====================================================================
+      SUBROUTINE DIIS_CopyVec(Nx, src, dst)
+      implicit none
+      INTEGER Nx, i
+      DOUBLE PRECISION src(Nx), dst(Nx)
+      do i = 1, Nx
+          dst(i) = src(i)
+      end do
+      return
+      END
+
+
+C=====================================================================
+      SUBROUTINE DIIS_BlendVec(Nx, a, b, w, out)
+      implicit none
+      INTEGER Nx, i
+      DOUBLE PRECISION a(Nx), b(Nx), out(Nx), w
+      do i = 1, Nx
+          out(i) = w * a(i) + (1.d0 - w) * b(i)
+      end do
       return
       END

@@ -33,6 +33,28 @@ struct ControlParams {
     
     std::string algorithm = "harvey";  // 默认使用Harvey方法
 
+    // Optimization method / acceleration
+    // Available: bfgs (default), gdiis, gediis
+    std::string opt_method = "bfgs";
+    int ndiis = 4;  // DIIS subspace size (history length)
+
+    // Hessian update scheme (XMECP-style)
+    // Available: bfgs (default), psb, sr1, bofill
+    std::string hupd_method = "bfgs";
+
+
+    // Lagrangian-constraint / penalty-function parameters (XMECP-style)
+    // Defaults follow XMECP inp_proc.py: pf_alpha=0.02, pf_sigma=3.50
+    double pf_alpha = 0.02;   // alpha (energy, Hartree)
+    double pf_sigma = 3.50;   // sigma (1/Hartree)
+
+    // Penalty-function specific convergence criteria (XMECP-style)
+    // Defaults follow XMECP inp_proc.py: pf_thresh=[1e-6, 5e-3]
+    //   - pf_tstep: objective-function change threshold
+    //   - pf_tgrad: penalty-function gradient threshold
+    double pf_tstep = 1e-6;
+    double pf_tgrad = 5e-3;
+
     void print_debug_info() const {
         if (debug) {
             std::cout << "\n=== Control Parameters (Debug) ===\n";
@@ -42,6 +64,13 @@ struct ControlParams {
             std::cout << "debug   = " << (debug ? "true" : "false") << std::endl;
             std::cout << "restart = " << (restart ? "true" : "false") << std::endl;
             std::cout << "algorithm = " << algorithm << std::endl;
+            std::cout << "opt_method = " << opt_method << std::endl;
+            std::cout << "hupd_method = " << hupd_method << std::endl;
+            std::cout << "ndiis = " << ndiis << std::endl;
+            std::cout << "pf_alpha = " << pf_alpha << std::endl;
+            std::cout << "pf_sigma = " << pf_sigma << std::endl;
+            std::cout << "pf_tstep = " << pf_tstep << std::endl;
+            std::cout << "pf_tgrad = " << pf_tgrad << std::endl;
             std::cout << "=== Convergence Criteria ===\n";
             std::cout << "tde     = " << tde << std::endl;
             std::cout << "tgmax   = " << tgmax << std::endl;
@@ -204,11 +233,158 @@ private:
             {"tdxmax", [this](const std::string& v) { control.tdxmax = std::stod(v); }},
             {"tdxrms", [this](const std::string& v) { control.tdxrms = std::stod(v); }},
             {"stpmx", [this](const std::string& v) { control.stpmx = std::stod(v); }},
-            {"algorithm", [this](const std::string& v) { 
-                if (v == "harvey" || v == "bpupd") {
-                    control.algorithm = v; 
+            {"opt_method", [this](const std::string& v) {
+                std::string vv = v;
+                std::transform(vv.begin(), vv.end(), vv.begin(),
+                               [](unsigned char c){ return std::tolower(c); });
+                if (vv == "bfgs" || vv == "gdiis" || vv == "gediis") {
+                    control.opt_method = vv;
+                } else if (vv == "diis") {
+                    control.opt_method = "gdiis";
                 } else {
-                    std::cerr << "Warning: Unknown algorithm '" << v 
+                    std::cerr << "Warning: Unknown opt_method '" << v
+                              << "', using default 'bfgs'" << std::endl;
+                    control.opt_method = "bfgs";
+                }
+            }},
+            {"opt", [this](const std::string& v) {
+                std::string vv = v;
+                std::transform(vv.begin(), vv.end(), vv.begin(),
+                               [](unsigned char c){ return std::tolower(c); });
+                if (vv == "bfgs" || vv == "gdiis" || vv == "gediis") {
+                    control.opt_method = vv;
+                } else if (vv == "diis") {
+                    control.opt_method = "gdiis";
+                } else {
+                    std::cerr << "Warning: Unknown opt_method '" << v
+                              << "', using default 'bfgs'" << std::endl;
+                    control.opt_method = "bfgs";
+                }
+            }},
+            {"optmethod", [this](const std::string& v) {
+                std::string vv = v;
+                std::transform(vv.begin(), vv.end(), vv.begin(),
+                               [](unsigned char c){ return std::tolower(c); });
+                if (vv == "bfgs" || vv == "gdiis" || vv == "gediis") {
+                    control.opt_method = vv;
+                } else if (vv == "diis") {
+                    control.opt_method = "gdiis";
+                } else {
+                    std::cerr << "Warning: Unknown opt_method '" << v
+                              << "', using default 'bfgs'" << std::endl;
+                    control.opt_method = "bfgs";
+                }
+            }},
+            {"diis", [this](const std::string& v) {
+                std::string vv = v;
+                std::transform(vv.begin(), vv.end(), vv.begin(),
+                               [](unsigned char c){ return std::tolower(c); });
+                if (vv == "none" || vv == "off" || vv == "false") {
+                    control.opt_method = "bfgs";
+                } else if (vv == "bfgs" || vv == "gdiis" || vv == "gediis" || vv == "diis") {
+                    control.opt_method = (vv == "diis") ? "gdiis" : vv;
+                } else {
+                    // treat any other truthy value as enabling GDIIS
+                    control.opt_method = "gdiis";
+                }
+            }},
+            {"diis_method", [this](const std::string& v) {
+                std::string vv = v;
+                std::transform(vv.begin(), vv.end(), vv.begin(),
+                               [](unsigned char c){ return std::tolower(c); });
+                if (vv == "bfgs" || vv == "gdiis" || vv == "gediis") {
+                    control.opt_method = vv;
+                } else if (vv == "diis") {
+                    control.opt_method = "gdiis";
+                } else {
+                    std::cerr << "Warning: Unknown opt_method '" << v
+                              << "', using default 'bfgs'" << std::endl;
+                    control.opt_method = "bfgs";
+                }
+            }},
+            {"hupd", [this](const std::string& v) {
+                std::string vv = v;
+                std::transform(vv.begin(), vv.end(), vv.begin(),
+                               [](unsigned char c){ return std::tolower(c); });
+                if (vv == "bfgs" || vv == "psb" || vv == "sr1" || vv == "bofill") {
+                    control.hupd_method = vv;
+                } else {
+                    std::cerr << "Warning: Unknown hupd_method '" << v
+                              << "', using default 'bfgs'" << std::endl;
+                    control.hupd_method = "bfgs";
+                }
+            }},
+            {"hupd_method", [this](const std::string& v) {
+                std::string vv = v;
+                std::transform(vv.begin(), vv.end(), vv.begin(),
+                               [](unsigned char c){ return std::tolower(c); });
+                if (vv == "bfgs" || vv == "psb" || vv == "sr1" || vv == "bofill") {
+                    control.hupd_method = vv;
+                } else {
+                    std::cerr << "Warning: Unknown hupd_method '" << v
+                              << "', using default 'bfgs'" << std::endl;
+                    control.hupd_method = "bfgs";
+                }
+            }},
+            {"hess_update", [this](const std::string& v) {
+                std::string vv = v;
+                std::transform(vv.begin(), vv.end(), vv.begin(),
+                               [](unsigned char c){ return std::tolower(c); });
+                if (vv == "bfgs" || vv == "psb" || vv == "sr1" || vv == "bofill") {
+                    control.hupd_method = vv;
+                } else {
+                    std::cerr << "Warning: Unknown hess_update '" << v
+                              << "', using default 'bfgs'" << std::endl;
+                    control.hupd_method = "bfgs";
+                }
+            }},
+            {"hessupd", [this](const std::string& v) {
+                std::string vv = v;
+                std::transform(vv.begin(), vv.end(), vv.begin(),
+                               [](unsigned char c){ return std::tolower(c); });
+                if (vv == "bfgs" || vv == "psb" || vv == "sr1" || vv == "bofill") {
+                    control.hupd_method = vv;
+                } else {
+                    std::cerr << "Warning: Unknown hessupd '" << v
+                              << "', using default 'bfgs'" << std::endl;
+                    control.hupd_method = "bfgs";
+                }
+            }},
+            {"ndiis", [this](const std::string& v) { control.ndiis = std::stoi(v); }},
+            {"diis_size", [this](const std::string& v) { control.ndiis = std::stoi(v); }},
+            {"diissize", [this](const std::string& v) { control.ndiis = std::stoi(v); }},
+            {"pf_alpha", [this](const std::string& v) { control.pf_alpha = std::stod(v); }},
+            {"pf_sigma", [this](const std::string& v) { control.pf_sigma = std::stod(v); }},
+            {"pf_tstep", [this](const std::string& v) { control.pf_tstep = std::stod(v); }},
+            {"pf_tgrad", [this](const std::string& v) { control.pf_tgrad = std::stod(v); }},
+            {"pf_thresh_step", [this](const std::string& v) { control.pf_tstep = std::stod(v); }},
+            {"pf_thresh_grad", [this](const std::string& v) { control.pf_tgrad = std::stod(v); }},
+            {"pf_thresh", [this](const std::string& v) {
+                // Accept formats like: "1e-6,0.005" or "[1e-6, 0.005]"
+                std::string vv = v;
+                vv.erase(std::remove_if(vv.begin(), vv.end(), [](unsigned char c){
+                    return std::isspace(c) || c=='[' || c==']' || c=='(' || c==')';
+                }), vv.end());
+                std::vector<std::string> parts;
+                std::stringstream ss(vv);
+                std::string token;
+                while (std::getline(ss, token, ',')) {
+                    if (!token.empty()) parts.push_back(token);
+                }
+                if (parts.size() >= 1) control.pf_tstep = std::stod(parts[0]);
+                if (parts.size() >= 2) control.pf_tgrad = std::stod(parts[1]);
+            }},
+            {"algorithm", [this](const std::string& v) { 
+                std::string vv = v;
+                std::transform(vv.begin(), vv.end(), vv.begin(),
+                               [](unsigned char c){ return std::tolower(c); });
+                if (vv == "harvey" || vv == "bpupd" || vv == "lagrange" || vv == "pf") {
+                    control.algorithm = vv;
+                } else if (vv == "lc") {
+                    // alias for lagrange
+                    control.algorithm = "lagrange";
+                } else {
+                    std::cerr << "Warning: Unknown algorithm '" << v
                               << "', using default 'harvey'" << std::endl;
                     control.algorithm = "harvey";
                 }
@@ -336,9 +512,6 @@ public:
         // Print debug info if requested
         m_input.control.print_debug_info();
         
-        // Print algorithm-specific banner
-        print_algorithm_banner();
-
         if (!initialize()) return false;
         
         for (int i = m_current_step; i <= m_max_iter; ++i) {
@@ -704,35 +877,6 @@ private:
         }
         return true;
     }
-
-    void print_algorithm_banner() {
-        std::cout << "\n";
-        std::cout << "+=============================================================+\n";
-        std::cout << "|                       baneMECP v0.30                        |\n";
-        std::cout << "|                         Sept. 2025                          |\n";
-        std::cout << "|                     Author: Bane Dysta                      |\n";
-        std::cout << "+-------------------------------------------------------------+\n";
-
-        if (m_input.control.algorithm == "harvey") {
-            std::cout << "| Algorithm: Harvey                                           |\n";
-            std::cout << "| Reference: Theor. Chem. Acc., 1998, 99, 95                  |\n";
-            std::cout << "| Refers to:  sobMECP@sobereva                                |\n";
-        } else if (m_input.control.algorithm == "bpupd") {
-            std::cout << "| Algorithm: Updated Branching Plane                          |\n";
-            std::cout << "| Reference: J. Comput. Theory Chem., 2010, 6, 1538           |\n";
-            std::cout << "| Refers to:  XMECP@kalinite                                  |\n";
-        }
-
-        std::cout << "+-------------------------------------------------------------+\n";
-        std::cout << "| Email:  banerxmd@gmail.com                                  |\n";
-        std::cout << "| GitHub: https://github.com/bane-dysta/banemecp              |\n";
-        std::cout << "|                                                             |\n";
-        std::cout << "| Citation:                                                   |\n";
-        std::cout << "|   Chiyuan Wei, baneMECP program,                            |\n";
-        std::cout << "|   https://github.com/bane-dysta/banemecp                    |\n";
-        std::cout << "|   (accessed month day, year)                                |\n";
-        std::cout << "+=============================================================+\n\n";
-    }
     
     bool compile_mecp_solver(int natom) {
         if (m_debug) {
@@ -781,6 +925,13 @@ private:
         cmd_ss << " --tdxmax " << std::scientific << m_input.control.tdxmax;
         cmd_ss << " --tdxrms " << std::scientific << m_input.control.tdxrms;
         cmd_ss << " --stpmx " << std::scientific << m_input.control.stpmx;
+        cmd_ss << " --opt " << m_input.control.opt_method;
+        cmd_ss << " --hupd " << m_input.control.hupd_method;
+        cmd_ss << " --ndiis " << m_input.control.ndiis;
+        cmd_ss << " --pf_alpha " << std::scientific << m_input.control.pf_alpha;
+        cmd_ss << " --pf_sigma " << std::scientific << m_input.control.pf_sigma;
+        cmd_ss << " --pf_tstep " << std::scientific << m_input.control.pf_tstep;
+        cmd_ss << " --pf_tgrad " << std::scientific << m_input.control.pf_tgrad;
 
         std::string mecp_cmd = cmd_ss.str();
 
@@ -889,18 +1040,18 @@ auto extract_single_state = [&](int state_num) {
             std::string content = read_file(output_file);
             if (content.empty()) return false;
             
-            // Extract energy with E.LocateCount support
+            // Extract energy with E.LoacteCount support
             std::smatch e_match;
             std::regex e_regex(rules.at("E"));
             
-            // Get E.LocateCount parameter, default to 1 (first occurrence)
+            // Get E.LoacteCount parameter, default to 1 (first occurrence)
             int e_locate_count = 1;
-            if (rules.count("E.LocateCount") > 0) {
+            if (rules.count("E.LoacteCount") > 0) {
                 try {
-                    e_locate_count = std::stoi(rules.at("E.LocateCount"));
+                    e_locate_count = std::stoi(rules.at("E.LoacteCount"));
                 } catch (const std::exception& e) {
                     if (m_debug) {
-                        std::cerr << "Debug: Invalid E.LocateCount, using default value 1" << std::endl;
+                        std::cerr << "Debug: Invalid E.LoacteCount, using default value 1" << std::endl;
                     }
                     e_locate_count = 1;
                 }
@@ -934,16 +1085,16 @@ auto extract_single_state = [&](int state_num) {
                           << "): " << energy << std::endl;
             }
             
-            std::string grad_locate = rules.at("GRAD.Locate");
+            std::string grad_locate = rules.at("GRAD.Loacte");
             
-            // Get GRAD.LocateCount parameter, default to 1 (first occurrence)
+            // Get GRAD.LoacteCount parameter, default to 1 (first occurrence)
             int locate_count = 1;
-            if (rules.count("GRAD.LocateCount") > 0) {
+            if (rules.count("GRAD.LoacteCount") > 0) {
                 try {
-                    locate_count = std::stoi(rules.at("GRAD.LocateCount"));
+                    locate_count = std::stoi(rules.at("GRAD.LoacteCount"));
                 } catch (const std::exception& e) {
                     if (m_debug) {
-                        std::cerr << "Debug: Invalid GRAD.LocateCount, using default value 1" << std::endl;
+                        std::cerr << "Debug: Invalid GRAD.LoacteCount, using default value 1" << std::endl;
                     }
                     locate_count = 1;
                 }
@@ -1055,7 +1206,7 @@ auto extract_single_state = [&](int state_num) {
             return write_file(step_name + ".grad" + std::to_string(state_num), grad_file_content.str());
         };
         if (!extract_single_state(1)) return false;
-        // Always extract second state results, regradless of whether InpTmplt2 was provided
+        // Always extract second state results, regardless of whether InpTmplt2 was provided
         if (!extract_single_state(2)) return false;
         return true;
     }
@@ -1258,6 +1409,12 @@ int main(int argc, char* argv[]) {
         std::cerr << "    debug=false" << std::endl;
         std::cerr << "    restart=true" << std::endl;
         std::cerr << "    algorithm=harvey" << std::endl;
+        std::cerr << "    # For lagrange/pf algorithm only:" << std::endl;
+        std::cerr << "    pf_alpha=0.02" << std::endl;
+        std::cerr << "    pf_sigma=3.5" << std::endl;
+        std::cerr << "    # PF-specific convergence (optional, defaults follow XMECP):" << std::endl;
+        std::cerr << "    pf_tstep=1e-6" << std::endl;
+        std::cerr << "    pf_tgrad=5e-3" << std::endl;
         std::cerr << "  end" << std::endl;
         std::cerr << "  %InpTmplt1 ... end" << std::endl;
         std::cerr << "  %InpTmplt2 ... end (optional)" << std::endl;
