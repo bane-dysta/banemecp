@@ -1,0 +1,28 @@
+from: markdown+raw_tex+smart
+standalone: true
+pdf-engine: xelatex
+number-sections: true
+columns: 1000
+wrap: none
+highlight-style: tango
+include-in-header:
+  - preamble.tex
+variables:
+  documentclass: ctexart
+  classoption:
+    - UTF8
+    - a4paper
+    - oneside
+  fontsize: 11pt
+  geometry:
+    - margin=2.25cm
+  linestretch: 1.18
+  colorlinks: true
+  linkcolor: blue
+  urlcolor: blue
+  mainfont: "Noto Serif"
+  sansfont: "Noto Sans"
+  monofont: "Noto Sans Mono"
+  CJKmainfont: "Noto Serif CJK SC"
+  CJKsansfont: "Noto Sans CJK SC"
+  CJKmonofont: "Noto Sans Mono CJK SC"
