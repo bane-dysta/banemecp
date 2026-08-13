@@ -7,3 +7,4 @@ abort/*
 banemecp
 banemecp_static
 *.tgz
+*.zip
