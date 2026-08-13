@@ -192,7 +192,7 @@ public:
                 } else if (directive == "geom") {
                     line_ss >> geom_file;
                 } else if (directive == "control") {
-                    parse_control_section(file);
+                    if (!parse_control_section(file)) return false;
                 } else if (directive == "inptmplt1" || directive == "inptmplt2" || directive == "grptmplt") {
                     std::stringstream content_ss;
                     std::string section_line;
@@ -219,7 +219,7 @@ public:
     }
 
 private:
-    void parse_control_section(std::ifstream& file) {
+    bool parse_control_section(std::ifstream& file) {
         std::string line;
         std::map<std::string, std::function<void(const std::string&)>> parsers = {
             {"maxcyc", [this](const std::string& v) { control.maxcyc = std::stoi(v); }},
@@ -360,19 +360,44 @@ private:
             {"pf_thresh_step", [this](const std::string& v) { control.pf_tstep = std::stod(v); }},
             {"pf_thresh_grad", [this](const std::string& v) { control.pf_tgrad = std::stod(v); }},
             {"pf_thresh", [this](const std::string& v) {
-                // Accept formats like: "1e-6,0.005" or "[1e-6, 0.005]"
+                // Legacy combined form. It MUST contain exactly two values:
+                //   pf_thresh=<tstep>,<tgrad>
+                // Prefer the explicit pf_tstep / pf_tgrad keys in new inputs.
                 std::string vv = v;
                 vv.erase(std::remove_if(vv.begin(), vv.end(), [](unsigned char c){
                     return std::isspace(c) || c=='[' || c==']' || c=='(' || c==')';
                 }), vv.end());
-                std::vector<std::string> parts;
-                std::stringstream ss(vv);
-                std::string token;
-                while (std::getline(ss, token, ',')) {
-                    if (!token.empty()) parts.push_back(token);
+
+                if (std::count(vv.begin(), vv.end(), ',') != 1) {
+                    throw std::invalid_argument(
+                        "pf_thresh requires exactly two comma-separated values: "
+                        "pf_thresh=<tstep>,<tgrad>");
                 }
-                if (parts.size() >= 1) control.pf_tstep = std::stod(parts[0]);
-                if (parts.size() >= 2) control.pf_tgrad = std::stod(parts[1]);
+
+                const size_t comma = vv.find(',');
+                const std::string tstep_text = vv.substr(0, comma);
+                const std::string tgrad_text = vv.substr(comma + 1);
+                if (tstep_text.empty() || tgrad_text.empty()) {
+                    throw std::invalid_argument(
+                        "pf_thresh requires two non-empty values: "
+                        "pf_thresh=<tstep>,<tgrad>");
+                }
+
+                auto parse_strict_double = [](const std::string& text,
+                                              const char* field) -> double {
+                    size_t used = 0;
+                    double value = std::stod(text, &used);
+                    if (used != text.size()) {
+                        throw std::invalid_argument(
+                            std::string("invalid ") + field + " value '" + text + "'");
+                    }
+                    return value;
+                };
+
+                const double tstep = parse_strict_double(tstep_text, "tstep");
+                const double tgrad = parse_strict_double(tgrad_text, "tgrad");
+                control.pf_tstep = tstep;
+                control.pf_tgrad = tgrad;
             }},
             {"algorithm", [this](const std::string& v) { 
                 std::string vv = v;
@@ -416,12 +441,20 @@ private:
                     try {
                         parsers[key](value);
                     } catch (const std::exception& e) {
-                        std::cerr << "Warning: Failed to parse " << key << " = " << value 
+                        if (key == "pf_thresh") {
+                            std::cerr << "Error: Invalid pf_thresh = " << value << ". "
+                                      << e.what() << std::endl;
+                            std::cerr << "       Recommended form: set pf_tstep and pf_tgrad "
+                                      << "separately." << std::endl;
+                            return false;
+                        }
+                        std::cerr << "Warning: Failed to parse " << key << " = " << value
                                   << ", using default value. Error: " << e.what() << std::endl;
                     }
                 }
             }
         }
+        return true;
     }
     
     void parse_grp_tmplt(const std::string& content) {
@@ -1040,18 +1073,18 @@ auto extract_single_state = [&](int state_num) {
             std::string content = read_file(output_file);
             if (content.empty()) return false;
             
-            // Extract energy with E.LoacteCount support
+            // Extract energy with E.LocateCount support
             std::smatch e_match;
             std::regex e_regex(rules.at("E"));
             
-            // Get E.LoacteCount parameter, default to 1 (first occurrence)
+            // Get E.LocateCount parameter, default to 1 (first occurrence)
             int e_locate_count = 1;
-            if (rules.count("E.LoacteCount") > 0) {
+            if (rules.count("E.LocateCount") > 0) {
                 try {
-                    e_locate_count = std::stoi(rules.at("E.LoacteCount"));
+                    e_locate_count = std::stoi(rules.at("E.LocateCount"));
                 } catch (const std::exception& e) {
                     if (m_debug) {
-                        std::cerr << "Debug: Invalid E.LoacteCount, using default value 1" << std::endl;
+                        std::cerr << "Debug: Invalid E.LocateCount, using default value 1" << std::endl;
                     }
                     e_locate_count = 1;
                 }
@@ -1085,16 +1118,16 @@ auto extract_single_state = [&](int state_num) {
                           << "): " << energy << std::endl;
             }
             
-            std::string grad_locate = rules.at("GRAD.Loacte");
+            std::string grad_locate = rules.at("GRAD.Locate");
             
-            // Get GRAD.LoacteCount parameter, default to 1 (first occurrence)
+            // Get GRAD.LocateCount parameter, default to 1 (first occurrence)
             int locate_count = 1;
-            if (rules.count("GRAD.LoacteCount") > 0) {
+            if (rules.count("GRAD.LocateCount") > 0) {
                 try {
-                    locate_count = std::stoi(rules.at("GRAD.LoacteCount"));
+                    locate_count = std::stoi(rules.at("GRAD.LocateCount"));
                 } catch (const std::exception& e) {
                     if (m_debug) {
-                        std::cerr << "Debug: Invalid GRAD.LoacteCount, using default value 1" << std::endl;
+                        std::cerr << "Debug: Invalid GRAD.LocateCount, using default value 1" << std::endl;
                     }
                     locate_count = 1;
                 }
@@ -1415,6 +1448,8 @@ int main(int argc, char* argv[]) {
         std::cerr << "    # PF-specific convergence (optional, defaults follow XMECP):" << std::endl;
         std::cerr << "    pf_tstep=1e-6" << std::endl;
         std::cerr << "    pf_tgrad=5e-3" << std::endl;
+        std::cerr << "    # Legacy combined form (must contain exactly two values):" << std::endl;
+        std::cerr << "    # pf_thresh=1e-6,5e-3" << std::endl;
         std::cerr << "  end" << std::endl;
         std::cerr << "  %InpTmplt1 ... end" << std::endl;
         std::cerr << "  %InpTmplt2 ... end (optional)" << std::endl;

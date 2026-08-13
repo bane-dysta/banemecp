@@ -414,11 +414,11 @@ H   1.000000   0.000000  -0.360000
 | --- | --- | --- |
 | `pf_alpha` | `0.02` | 罚函数参数 `alpha`。 |
 | `pf_sigma` | `3.50` | 罚函数参数 `sigma`。 |
-| `pf_tstep` | `1e-6` | PF 目标函数变化阈值。 |
-| `pf_tgrad` | `5e-3` | PF 梯度阈值。 |
-| `pf_thresh` | 无 | 同时设置 `pf_tstep` 与 `pf_tgrad`，接受 `1e-6,0.005` 或 `[1e-6, 0.005]`。 |
-| `pf_thresh_step` | 无 | 等价于单独设置 `pf_tstep`。 |
-| `pf_thresh_grad` | 无 | 等价于单独设置 `pf_tgrad`。 |
+| `pf_tstep` | `1e-6` | PF 目标函数变化阈值。推荐显式设置。 |
+| `pf_tgrad` | `5e-3` | PF 梯度阈值。推荐显式设置。 |
+| `pf_thresh` | 无 | 兼容键，格式`<tstep,tgrad>` |
+| `pf_thresh_step` | 无 | 兼容键，等价于单独设置 `pf_tstep`。 |
+| `pf_thresh_grad` | 无 | 兼容键，等价于单独设置 `pf_tgrad`。 |
 
 ### 兼容键别名
 
@@ -957,15 +957,24 @@ astep3
 
 ## PF / Lagrange 收敛判据
 
-在 `lagrange` / `pf` 下，求解器使用以下三项判据：
+在 `lagrange` / `pf` 下，参与收敛判断的为：
 
 | 指标 | 控制键 | 含义 |
 | --- | --- | --- |
-| `PF_Function1` | `pf_tstep` | 目标函数变化量。 |
-| `PF_Function2` | `pf_tgrad` | PF 梯度函数 2。 |
-| `PF_Function3` | `pf_tgrad` | PF 梯度函数 3。 |
+| `PF_Function1` | `pf_tstep` | PF 目标函数相邻步变化量。 |
+| `PF_Function2` | `pf_tgrad` | PF 有效梯度判据。 |
+| `PF_Function3` | 无 | 不参与收敛判断 |
 
-三项全部满足时，视为收敛。
+当 `PF_Function1` 与 `PF_Function2` 均满足各自阈值时，视为 PF 收敛。两态能量差在 PF/Lagrange 模式下仅输出。若需要把能量差进一步压低，应通过调整惩罚函数参数实现。
+
+参数写法推荐：
+
+```ini
+pf_tstep=4.5e-3
+pf_tgrad=4.5e-3
+```
+
+兼容写法 `pf_thresh=<tstep,tgrad>` 必须同时提供两个值；不接受单值。
 
 ## `stpmx`
 
@@ -1040,14 +1049,14 @@ Parallel_Gradient_RMS: ...
 Perpendicular_Gradient_RMS: ...
 ```
 
-在 PF / Lagrange 模式下，还会追加：
+在 PF / Lagrange 模式下，前面的常规梯度、位移与能量差项目只作为诊断信息；真正的 PF 收敛信息会追加为：
 
 ```text
 PF_Convergence_Criteria:
 PF_Objective: ...
-PF_Function1: ...
-PF_Function2: ...
-PF_Function3: ...
+PF_Function1: ...   # criterion: pf_tstep
+PF_Function2: ...   # criterion: pf_tgrad
+PF_Function3: ...   # diagnostic only
 ```
 
 ### 驱动器如何使用 `convg.tmp`

@@ -403,8 +403,14 @@ C       - pf/lagrange: always use PF-specific criteria (XMECP-style)
      
       IF (Conv .eq. 1) THEN
           write(*,*) 'MECP optimization CONVERGED!'
-          write(*,'(A,F18.10)') 'Final energy difference: ',
-     &                          ABS(Ea_2 - Eb_2)
+          if (trim(algorithm) .eq. 'lagrange' .or.
+     &        trim(algorithm) .eq. 'pf') then
+              write(*,'(A,F18.10)')
+     &          'Final energy difference (diagnostic): ', ABS(Ea_2-Eb_2)
+          else
+              write(*,'(A,F18.10)') 'Final energy difference: ',
+     &                              ABS(Ea_2 - Eb_2)
+          endif
 C         Write convergence status and criteria
           CALL WriteConvergenceInfo('CONVERGED', Nx, natom_actual,
      &                              Nstep, algorithm,
@@ -414,7 +420,7 @@ C         Write convergence status and criteria
      &                              PF_ALPHA, PF_SIGMA,
      &                              PF_TSTEP, PF_TGRAD)
 C         Write final geometry
-          CALL WriteXYZ('final.xyz', natom_actual, AtNum, X_3,
+          CALL WriteXYZ('final.xyz', natom_actual, AtNum, X_2,
      &                  'MECP Converged')
 C         Clean up state file
           OPEN(UNIT=99, FILE='MECP.state')
@@ -571,7 +577,13 @@ C     Write to convg.tmp file
       WRITE(98,'(A,F20.10)') 'Energy_State_1: ', Ea
       WRITE(98,'(A,F20.10)') 'Energy_State_2: ', Eb
       WRITE(98,'(A,F20.10)') 'Energy_Gap: ', DE
-      WRITE(98,'(A)') 'Convergence_Criteria:'
+      if (trim(algorithm) .eq. 'lagrange' .or.
+     &    trim(algorithm) .eq. 'pf') then
+          WRITE(98,'(A)')
+     &      'Convergence_Criteria: (diagnostic only for PF/Lagrange)'
+      else
+          WRITE(98,'(A)') 'Convergence_Criteria:'
+      endif
       WRITE(98,'(A,F12.6,A,F9.6,A,A3)') 
      &    'Max_Gradient: ', GMax, ' (', TGMax, ') ', flags(1)
       WRITE(98,'(A,F12.6,A,F9.6,A,A3)') 
@@ -580,8 +592,14 @@ C     Write to convg.tmp file
      &    'Max_Displacement: ', DXMax, ' (', TDXMax, ') ', flags(3)
       WRITE(98,'(A,F12.6,A,F9.6,A,A3)') 
      &    'RMS_Displacement: ', DXRMS, ' (', TDXRMS, ') ', flags(4)
-      WRITE(98,'(A,F12.6,A,F9.6,A,A3)') 
-     &    'Energy_Gap_Conv: ', DE, ' (', TDE, ') ', flags(5)
+      if (trim(algorithm) .eq. 'lagrange' .or.
+     &    trim(algorithm) .eq. 'pf') then
+          WRITE(98,'(A,F12.6,A)')
+     &      'Energy_Gap_Conv: ', DE, ' (diagnostic only; TDE not used)'
+      else
+          WRITE(98,'(A,F12.6,A,F9.6,A,A3)')
+     &      'Energy_Gap_Conv: ', DE, ' (', TDE, ') ', flags(5)
+      endif
       WRITE(98,'(A,F12.6)') 'Parallel_Gradient_RMS: ', PGRMS
       WRITE(98,'(A,F12.6)') 'Perpendicular_Gradient_RMS: ', PpGRMS
 
@@ -640,10 +658,8 @@ C     Append PF-specific convergence info for pf/lagrange.
               PFConv(2) = .true.
               pflg(2) = "YES"
           endif
-          if (abs(func3) .lt. PF_TGRAD) then
-              PFConv(3) = .true.
-              pflg(3) = "YES"
-          endif
+C         func3 is retained for diagnostics only; it is not a criterion.
+          pflg(3) = "---"
 
           WRITE(98,'(A)') 'PF_Convergence_Criteria:'
           WRITE(98,'(A,F20.10)') 'PF_Objective: ', PF_CURR
@@ -651,8 +667,8 @@ C     Append PF-specific convergence info for pf/lagrange.
      &        'PF_Function1: ', func1, ' (', PF_TSTEP, ') ', pflg(1)
           WRITE(98,'(A,F12.6,A,F9.6,A,A3)')
      &        'PF_Function2: ', func2, ' (', PF_TGRAD, ') ', pflg(2)
-          WRITE(98,'(A,F12.6,A,F9.6,A,A3)')
-     &        'PF_Function3: ', func3, ' (', PF_TGRAD, ') ', pflg(3)
+          WRITE(98,'(A,F12.6,A)')
+     &        'PF_Function3: ', func3, ' (diagnostic only)'
       endif
       CLOSE(98)
       
@@ -1234,7 +1250,7 @@ C=====================================================================
        double precision HIPSB(N,N), HISR1(N,N), phi, tmp
 
        eps = 1.0d-12
-       stpmax = STPMX * N
+       stpmax = STPMX
 
        IF (FirstStep) THEN
            DO i = 1, n
@@ -1426,10 +1442,12 @@ C
 C   Criteria:
 C     func1 = PF_prev - PF_curr  (objective change)
 C     func2 = dot(-grad, u)      (|grad|, u is normalized grad)
-C     func3 = norm(-grad - func2*u) (orthogonal component)
+C     func3 = norm(-grad - func2*u) (diagnostic only)
 C
 C   Converged if:
-C     |func1| < PF_TSTEP and |func2| < PF_TGRAD and |func3| < PF_TGRAD
+C     |func1| < PF_TSTEP and |func2| < PF_TGRAD
+C   func3 and the electronic-state energy gap are diagnostics only;
+C   they do not enter the PF convergence decision.
 C=====================================================================
       SUBROUTINE TestConvergencePF(Nx,Natom_actual,Nstep,AtNum,
      &                             Ea_prev,Eb_prev,Ea,Eb,
@@ -1513,13 +1531,11 @@ C     Evaluate PF convergence flags
           PFConv(2) = .true.
           flags(2) = "YES"
       endif
-      if (abs(func3) .lt. PF_TGRAD) then
-          PFConv(3) = .true.
-          flags(3) = "YES"
-      endif
+C     func3 is retained for diagnostics only; it is not a criterion.
+      flags(3) = "---"
 
       Nstep = Nstep + 1
-      if (PFConv(1) .and. PFConv(2) .and. PFConv(3)) then
+      if (PFConv(1) .and. PFConv(2)) then
           Conv = 1
       else
           Conv = 0
@@ -1560,8 +1576,8 @@ C     Print PF convergence info to screen (XMECP-style)
      &    '    PF Function1:     ', func1, ' (', PF_TSTEP, ')  ', flags(1)
       write(*,'(A,F12.6,A,F9.6,A,A3)')
      &    '    PF Function2:     ', func2, ' (', PF_TGRAD, ')  ', flags(2)
-      write(*,'(A,F12.6,A,F9.6,A,A3)')
-     &    '    PF Function3:     ', func3, ' (', PF_TGRAD, ')  ', flags(3)
+      write(*,'(A,F12.6,A)')
+     &    '    PF Function3:     ', func3, '  (diagnostic only)'
       write(*,*)
 
       return
@@ -2126,7 +2142,7 @@ C     Mild damping near convergence (similar spirit to XMECP)
       end do
 
 C     Apply trust radius limits (same logic as UpdateX)
-      stpmax = STPMX * Nx
+      stpmax = STPMX
       stpl = 0.d0
       do i = 1, Nx
           stpl = stpl + dX(i) * dX(i)

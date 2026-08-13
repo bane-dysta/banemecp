@@ -71,10 +71,13 @@
 
 - `pf_alpha=<float>`：alpha（Hartree）。默认`0.02`。
 - `pf_sigma=<float>`：sigma（1/Hartree）。默认`3.50`。
-- `pf_tstep=<float>`：罚函数目标值变化阈值。默认`1e-6`。
-- `pf_tgrad=<float>`：罚函数梯度阈值。默认`5e-3`。
-- `pf_thresh=<tstep,tgrad>`：同时设置`pf_tstep`与`pf_tgrad`（支持`1e-6,0.005`或`[1e-6, 0.005]`形式）。
+- `pf_tstep=<float>`：罚函数目标值变化阈值。默认`1e-6`。**推荐显式使用此键。**
+- `pf_tgrad=<float>`：罚函数梯度阈值。默认`5e-3`。**推荐显式使用此键。**
+- `pf_thresh=<tstep,tgrad>`：旧式组合写法，同时设置`pf_tstep`与`pf_tgrad`。**必须恰好给两个值**，例如`1e-6,0.005`或`[1e-6, 0.005]`；单值或多于两个值均视为输入错误。
+  - 新输入推荐分开写`pf_tstep`与`pf_tgrad`。
   - 兼容键：`pf_thresh_step`、`pf_thresh_grad`。
+- PF 收敛只由`|PF_Function1| < pf_tstep`和`|PF_Function2| < pf_tgrad`决定。`PF_Function3`保留为诊断量，不参与收敛判定。
+- PF/Lagrange 模式下的两态能量差仅用于输出、调试和备用判断，不使用`tde`作为 PF 收敛条件；若需要更小的能隙，应调整惩罚函数参数。
 
 ## %InpTmplt 输入模板
 
